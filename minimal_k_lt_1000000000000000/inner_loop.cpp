@@ -14,11 +14,101 @@
 #include "lcg.h"
 #include "tlv.h"
 
+template <class T, class TT> static T square_mod(const T &u, const T &q)
+{
+    TT r = u;
+    r *= u;
+    r %= q;
+    return (T)r;
+}
+
+template <class T, class TT> static T mul_mod(const T &u, const T &v, const T &q)
+{
+    TT r = u;
+    r *= v;
+    r %= q;
+    return (T)r;
+}
+
+template <class T, class TT> static T long_mod(const T &u, const T &v, const T &q)
+{
+    TT r = u;
+    r <<= sizeof(T) * 8;
+    r += v;
+    r %= q;
+    return (T)r;
+}
+
+// (u << 64 + v) mod n
+template <> uint64_t long_mod<uint64_t, uint128_t>(const uint64_t &u, const uint64_t &v, const uint64_t &n)
+{
+#ifdef __x86_64__
+    uint64_t r, a;
+    asm("divq %4" : "=d"(r), "=a"(a) : "0"(u), "1"(v), "r"(n));
+    return r;
+#else
+    uint128_t t = ((uint128_t)u << 64) + v;
+    return t % n;
+#endif
+}
+
+// (u * v) mod n
+template <> uint64_t mul_mod<uint64_t, uint128_t>(const uint64_t &u, const uint64_t &v, const uint64_t &n)
+{
+#ifdef __x86_64__
+    uint64_t r, a;
+    asm("mulq %3" : "=d"(r), "=a"(a) : "1"(u), "r"(v));
+    asm("divq %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n));
+    return r;
+#else
+    uint128_t t = (uint128_t)u * v;
+    return t % n;
+#endif
+}
+
+// (u * u) mod n
+template <> uint64_t square_mod<uint64_t, uint128_t>(const uint64_t &u, const uint64_t &n)
+{
+#ifdef __x86_64__
+    uint64_t r, a;
+    asm("mulq %3" : "=d"(r), "=a"(a) : "1"(u), "r"(u));
+    asm("divq %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n));
+    return r;
+#else
+    uint128_t t = (uint128_t)u * u;
+    return t % n;
+#endif
+}
+
+// count trailing zeroed bits
+static inline uint64_t tzcnt(uint64_t a)
+{
+#ifdef __x86_64__
+    uint64_t r;
+    asm("tzcntq %1,%0" : "=r"(r) : "r"(a));
+    return r;
+#else
+    return __builtin_ctzll(a);
+#endif
+}
+
+// count leading zeroed bits
+static inline uint64_t lzcnt(uint64_t a)
+{
+#ifdef __x86_64__
+    uint64_t r;
+    asm("lzcntq %1,%0" : "=r"(r) : "r"(a));
+    return r;
+#else
+    return __builtin_clzll(a);
+#endif
+}
+
 template <class T> unsigned log_2(const T &x)
 {
     if (x)
     {
-        return 63 - __builtin_clzll(x);
+        return 63 - lzcnt(x);
     }
     else
     {
@@ -32,60 +122,14 @@ template <> unsigned log_2<uint128_t>(const uint128_t &x)
     uint64_t hi = (uint64_t)(x >> 64);
     if (hi)
     {
-        return 127 - __builtin_clzll(hi);
+        return 127 - lzcnt(hi);
     }
-    else if (lo)
-    {
-        return 63 - __builtin_clzll(lo);
-    }
-    else
-    {
-        return 0;
-    }
+    return 63 - lzcnt(lo);
 }
 
 template <> unsigned log_2<uint64_t>(const uint64_t &x)
 {
-    if (x)
-    {
-        return 63 - __builtin_clzll(x);
-    }
-    else
-    {
-        return 0;
-    }
-}
-
-template <class T, class TT> static T square_mod(const T &u, const T &q)
-{
-    TT r = u;
-    r *= u;
-    r %= q;
-    return (T)r;
-}
-
-template <> uint64_t square_mod<uint64_t, uint128_t>(const uint64_t &u, const uint64_t &q)
-{
-    uint64_t r, a;
-    asm("mul %3" : "=d"(r), "=a"(a) : "1"(u), "r"(u));
-    asm("div %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(q));
-    return r;
-}
-
-template <class T, class TT> static T mul_mod(const T &u, const T &v, const T &q)
-{
-    TT r = u;
-    r *= v;
-    r %= q;
-    return (T)r;
-}
-
-template <> uint64_t mul_mod<uint64_t, uint128_t>(const uint64_t &u, const uint64_t &v, const uint64_t &q)
-{
-    uint64_t r, a;
-    asm("mul %3" : "=d"(r), "=a"(a) : "1"(u), "r"(v));
-    asm("div %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(q));
-    return r;
+    return 63 - lzcnt(x);
 }
 
 template <class T> static T sub_mod(const T &u, const T &v, const T &q)
@@ -168,8 +212,8 @@ template <class T> static T gcd(const T &x, const T &y)
         return y;
     if (y == 0)
         return x;
-    unsigned tu = __builtin_ctzll(x);
-    unsigned tv = __builtin_ctzll(y);
+    unsigned tu = tzcnt(x);
+    unsigned tv = tzcnt(y);
     unsigned h = tu > tv ? tv : tu;
     T u = x >> tu;
     T v = y >> tv;
@@ -186,7 +230,7 @@ template <class T> static T gcd(const T &x, const T &y)
         {
             return u << h;
         }
-        v >>= __builtin_ctzll(v);
+        v >>= tzcnt(v);
     }
 }
 
@@ -273,7 +317,7 @@ template <class T> static int jacobi(const T &x, const T &y)
     unsigned c = (v == 3) || (v == 5);
     while (a)
     {
-        v = __builtin_ctzll(a);
+        v = tzcnt(a);
         a >>= v;
         t = (c & (v & 1)) ? -t : t;
 
@@ -374,7 +418,7 @@ template <class T> static int kronecker(const T &x, const T &y)
     // gulp trailing zeroes from n
     v = a & 7;
     ca = (v == 3) || (v == 5);
-    v = __builtin_ctzll(n);
+    v = tzcnt(n);
     n >>= v;
     t = (ca & (v & 1)) ? -t : t;
 
@@ -388,7 +432,7 @@ template <class T> static int kronecker(const T &x, const T &y)
     // gulp trailing zeroes from a within Stein's algorithm.
     while (a > 0)
     {
-        v = __builtin_ctzll(a);
+        v = tzcnt(a);
         a >>= v;
         t = (cn & (v & 1)) ? -t : t;
         if (a == 1)
@@ -419,7 +463,7 @@ template <class T, class TT> static T mod_inv(const T &x, const T &m)
     T a = x, b = m, u = 1, v = 0;
     while (a != 0)
     {
-        unsigned ta = __builtin_ctzll(a);
+        unsigned ta = tzcnt(a);
         a >>= ta;
         while (ta--)
         {
@@ -610,19 +654,40 @@ template <class T, class TT> static bool is_perfect_sursolid(const T &a)
 }
 
 // a^e mod m
-template <class T, class TT> static T pow_mod(const T &a, const T &e, const T &m)
+template <class T, class TT> static T pow_mod(const T &a, const T &d, const T &m)
 {
-    T n = e;
-    T s = a;
-    T result = 1;
-    while (n)
+    if (a == 2)
     {
-        if (n & 1)
-            result = mul_mod<T, TT>(result, s, m);
-        s = square_mod<T, TT>(s, m);
-        n >>= 1;
+        // 2^e mod m : hardcode 5 first iterations
+        T n = log_2(d);
+	T e = d >> (n = ((n > 5) ? n - 5 : 0));
+        T result = long_mod<T, TT>(0, 1ull << e, m);
+
+        while (n--)
+        {
+            result = square_mod<T, TT>(result, m);
+            if ((d >> n) & 1)
+            {
+                result <<= 1;
+                result -= result >= m ? m : 0;
+            }
+        }
+        return result;
     }
-    return result;
+    else
+    {
+        T n = d;
+        T s = a;
+        T result = 1;
+        while (n)
+        {
+            if (n & 1)
+                result = mul_mod<T, TT>(result, s, m);
+            s = square_mod<T, TT>(s, m);
+            n >>= 1;
+        }
+        return result;
+    }
 }
 
 // MR strong test
@@ -989,17 +1054,25 @@ template <class T, class TT> static bool islnrc2prime(const T &n, int s = 0, int
         return false; // n composite perfect square, for any x, kronecker(x, n)==1 always
 
     // search minimal a where Kronecker(a, n) == -1
-    T a;
-    for (a = 3;; a++)
+    T a = 3;
+    T da = 2;
+    int j = jacobi<T>(a, n);
+    if (j == 0)
+        return false; // composite for sure
+    if (j == 1)
     {
-        if (!isprime<T, TT>(a))
-            continue;
+        T da = 2;
+        for (a = 5;; a += da, da = 6 - da)
+        {
+            if (!isprime<T, TT>(a))
+                continue;
 
-        int j = jacobi<T>(a, n);
-        if (j == 0)
-            return false; // composite for sure
-        if (j == -1)
-            break;
+            j = jacobi<T>(a, n);
+            if (j == 0)
+                return false; // composite for sure
+            if (j == -1)
+                break;
+        }
     }
     // (x+2)^(n+1) mod (n, x^2+a) == 4+a
     T bs = 1;
@@ -1314,6 +1387,46 @@ static int inner_self_test_64(void)
         return -1;
 
     printf("Power ...\n");
+    r = pow_mod<uint64_t, uint128_t>(2, 0xfedc, 197);
+    if (r != 182)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x8765, 197);
+    if (r != 103)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x81, 197);
+    if (r != 153)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x80, 197);
+    if (r != 175)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x41, 197);
+    if (r != 122)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x40, 197);
+    if (r != 61)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x22, 197);
+    if (r != 155)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x21, 197);
+    if (r != 176)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x20, 197);
+    if (r != 88)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x1f, 197);
+    if (r != 44)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x1e, 197);
+    if (r != 22)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x1d, 197);
+    if (r != 11)
+        return -1;
+    r = pow_mod<uint64_t, uint128_t>(2, 0x1c, 197);
+    if (r != 104)
+        return -1;
+
     r = pow_mod<uint64_t, uint128_t>(3, 0xaa55, 197);
     if (r != 0xa7)
         return -1;
