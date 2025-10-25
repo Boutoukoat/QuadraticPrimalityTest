@@ -422,37 +422,6 @@ static inline uint64_t log_2(uint64_t a)
     return 63 - lzcnt(a);
 }
 
-// binary gcd algorithm
-static uint64_t uint64_gcd(uint64_t x, uint64_t y)
-{
-    if (x == 0)
-        return y;
-    if (y == 0)
-        return x;
-    unsigned tu = tzcnt(x);
-    unsigned tv = tzcnt(y);
-    unsigned h = tu > tv ? tv : tu;
-    uint64_t t;
-    uint64_t u = x >> tu;
-    uint64_t v = y >> tv;
-
-    while (1)
-    {
-        if (u > v)
-        {
-            t = u;
-            u = v;
-            v = t;
-        }
-        v -= u;
-        if (v == 0)
-        {
-            return u << h;
-        }
-        v >>= tzcnt(v);
-    }
-}
-
 static int uint64_jacobi(uint64_t x, uint64_t y)
 {
     // assert((y & 1) == 1);
@@ -548,58 +517,6 @@ static int uint64_jacobi(uint64_t x, uint64_t y)
     }
 
     return (n == 1) ? t : 0;
-}
-
-// modular exponentiation a^e mod m
-static uint64_t uint64_powm(uint64_t a, uint64_t e, uint64_t m)
-{
-    if (a == 2)
-    {
-        // 2^e mod m : hardcode 6 first iterations
-        uint64_t n = 63 - lzcnt(e);
-        uint64_t s = e >> (n = ((n > 6) ? n - 6 : 0));
-        uint64_t result = shiftmod(1, s, m);
-
-        while (n >= 6)
-        {
-            result = mulmod(result, result, m);
-            result = mulmod(result, result, m);
-            result = mulmod(result, result, m);
-            s = (e >> (n = n - 6)) & 0x3f;
-            result = mulmod(result, result, m);
-            result = mulmod(result, result, m);
-            result = mulmod(result, result, m);
-            result = shiftmod(result, s, m);
-        }
-        while (n)
-        {
-            result = mulmod(result, result, m);
-            s = (e >> (n = n - 1)) & 0x1;
-            if (s)
-            {
-                result <<= 1;
-                result -= result >= m ? m : 0;
-            }
-        }
-        return result;
-    }
-    else
-    {
-        uint64_t n = e;
-        uint64_t b = a;
-        uint64_t result = 1;
-
-        while (n)
-        {
-            if (n & 1)
-            {
-                result = mulmod(b, result, m);
-            }
-            b = mulmod(b, b, m);
-            n >>= 1;
-        }
-        return result;
-    }
 }
 
 typedef enum sieve_e
@@ -1391,18 +1308,6 @@ void quadratic_primality_self_test(void)
 
 
     // ---------------------------------------------------------------------------------
-    printf("Gcd ...\n");
-    a = 12;
-    b = 15;
-    c = uint64_gcd(a, b);
-    assert(c == 3);
-
-    a = 120;
-    b = 150;
-    c = uint64_gcd(a, b);
-    assert(c == 30);
-
-    // ---------------------------------------------------------------------------------
     printf("Jacobi ...\n");
     mpz_t ma, mb;
     mpz_init_set_str(mb, "100000000000000021", 16);
@@ -1418,20 +1323,6 @@ void quadratic_primality_self_test(void)
     assert(uint64_jacobi(19, mpz_mod_ui(ma, mb, 4*19)) == 1);
     assert(uint64_jacobi(21, mpz_mod_ui(ma, mb, 4*21)) == 1);
     assert(uint64_jacobi(23, mpz_mod_ui(ma, mb, 4*23)) == -1);
-
-    // ---------------------------------------------------------------------------------
-    printf("Modexp ...\n");
-    m = 101;
-    a = 200;
-    b = 300;
-    c = uint64_powm(a, b, m);
-    assert(c == 1);
-
-    m = 101;
-    a = 201;
-    b = 301;
-    c = uint64_powm(a, b, m);
-    assert(c == 100);
 
     // ---------------------------------------------------------------------------------
     printf("Perfect square ...\n");
