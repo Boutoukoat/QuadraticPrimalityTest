@@ -1308,7 +1308,7 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
     if (verbose && r == false)
         printf("Number is composite\n");
     if (verbose && r == true)
-        printf("Number passed all test and is unlikely a composite one\n");
+        printf("Number passed all tests and is unlikely a composite one\n");
 
     return r;
 }

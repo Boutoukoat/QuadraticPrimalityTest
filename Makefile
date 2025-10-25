@@ -8,7 +8,7 @@ OBJ = quadratic_primality_main.o \
       expression_parser.a
 
 quadratic: $(OBJ)
-	$(GGG) -static -o quadratic $(OBJ) /home/pierre/Downloads/gmp-6.3.0/.libs/libgmp.a -lpthread
+	$(GGG) -static -o quadratic $(OBJ) -lgmp -lpthread
 
 quadratic_primality_main.o: quadratic_primality_main.cpp quadratic_primality.h quadratic_primality_alloc.h expression_parser.h
 	$(GGG) -c -o quadratic_primality_main.o quadratic_primality_main.cpp
