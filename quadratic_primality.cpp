@@ -34,7 +34,7 @@ static struct mod_precompute_t *mpz_mod_precompute(mpz_t n, bool verbose = false
     // check a power of 2 minus e
     mpz_set_ui(tmp, 1);
     mpz_mul_2exp(tmp, tmp, p->n);
-    mpz_sub(tmp, tmp, n);
+    mpz_sub(tmp, tmp, n); // tmp = 2^n - modulus
     p->power2me = (p->n > 128 && mpz_sgn(tmp) >= 0 && mpz_size(tmp) <= 1);
     if (p->power2me)
     {
@@ -47,7 +47,7 @@ static struct mod_precompute_t *mpz_mod_precompute(mpz_t n, bool verbose = false
         // check a power of 2 plus e
         mpz_set_ui(tmp, 1);
         mpz_mul_2exp(tmp, tmp, p->n - 1);
-        mpz_sub(tmp, n, tmp);
+        mpz_sub(tmp, n, tmp); // tmp = modulus - 2^n
         p->power2pe = (p->n > 128 && mpz_sgn(tmp) >= 0 && mpz_size(tmp) <= 1);
         if (p->power2pe)
         {
@@ -58,7 +58,7 @@ static struct mod_precompute_t *mpz_mod_precompute(mpz_t n, bool verbose = false
 
     if (!p->special_case)
     {
-        // check a proth number
+        // check a proth number  b * 2^n2 + 1
         p->n2 = (p->n + 1) / 2;
         mpz_mod_2exp(tmp, n, p->n2);
         if (p->n2 >= 64 && mpz_cmp_ui(tmp, 1) == 0)
@@ -124,10 +124,10 @@ static void mpz_mod_uncompute(mod_precompute_t *p)
     }
 }
 
-void mpz_mod_fast_reduce(mpz_t r, struct mod_precompute_t *p)
+void mpz_mod_fast_reduce(mpz_t r, mpz_t tmp, struct mod_precompute_t *p)
 {
-    mpz_t tmp, x_lo, x_hi;
-    mpz_inits(tmp, x_lo, x_hi, 0);
+    mpz_t x_lo, x_hi;
+    mpz_inits(x_lo, x_hi, 0);
 
     if (p->special_case)
     {
@@ -242,7 +242,7 @@ void mpz_mod_fast_reduce(mpz_t r, struct mod_precompute_t *p)
         }
     }
 
-    mpz_clears(tmp, x_lo, x_hi, 0);
+    mpz_clears(x_lo, x_hi, 0);
 }
 
 void mpz_mod_positive_reduce(mpz_t r, mpz_t tmp, struct mod_precompute_t *p)
@@ -250,14 +250,11 @@ void mpz_mod_positive_reduce(mpz_t r, mpz_t tmp, struct mod_precompute_t *p)
     // check r < 0
     if (mpz_sgn(r) < 0)
     {
-        // make number positive
-        mpz_set(tmp, p->m);
-        do
-        {
-            mpz_add(r, r, tmp);
-            mpz_add(tmp, tmp, tmp);
-        } while (mpz_sgn(r) < 0);
-        // now r >= 0 and r < 3*m
+        // make number positive by adding a large multiple of the modulus
+        int bits = mpz_sizeinbase(r, 2) - p->n;
+        bits = bits < 0 ? 1 : bits + 1;
+        mpz_mul_2exp(tmp, p->m, bits);
+        mpz_add(r, r, tmp);
     }
 }
 
@@ -270,11 +267,11 @@ static void mpz_mod_to_montg(mpz_t v, struct mod_precompute_t *p)
     }
 }
 
-static void mpz_mod_from_montg(mpz_t v, struct mod_precompute_t *p)
+static void mpz_mod_from_montg(mpz_t v, mpz_t tmp, struct mod_precompute_t *p)
 {
     if (p->montg)
     {
-        mpz_mod_fast_reduce(v, p);
+        mpz_mod_fast_reduce(v, tmp, p);
     }
 }
 
@@ -287,12 +284,6 @@ static void mpz_mod_slow_reduce(mpz_t x, mpz_t m)
     }
 }
 
-static void mpz_mod_add(mpz_t r, mpz_t a, mpz_t b, mpz_t m)
-{
-    mpz_add(r, a, b);
-    mpz_mod_slow_reduce(r, m);
-}
-
 // x % (2^b -1)
 static uint64_t mpz_mod_mersenne(mpz_t x, uint64_t b)
 {
@@ -303,7 +294,7 @@ static uint64_t mpz_mod_mersenne(mpz_t x, uint64_t b)
 
     if ((b & (b - 1)) == 0)
     {
-        // an exact power of 2
+        // b is an exact power of 2
         for (unsigned i = 0; i < s; i += 1)
         {
             r += array[i];
@@ -331,7 +322,7 @@ static uint64_t mpz_mod_mersenne(mpz_t x, uint64_t b)
             }
         }
     }
-    // reduce mod 2^b - 1
+    // reduce mod 2^b - 1 to a 64 bit number
     while (r >> 64)
     {
         r = (r & mask) + (r >> b);
@@ -454,56 +445,63 @@ static int uint64_jacobi(uint64_t x, uint64_t y)
     }
     if (x == 3)
     {
-        char j[6] = {0, -1, -1, 0, 1, 1};
+        char j[6] = {0, (char)-1, (char)-1, 0, 1, 1};
         return j[((y - 3) >> 1) % 6];
     }
     if (x == 5)
     {
-        char j[5] = {-1, 0, -1, 1, 1};
+        char j[5] = {(char)-1, 0, (char)-1, 1, 1};
         return j[((y - 3) >> 1) % 5];
     }
     if (x == 7)
     {
-        char j[14] = {1, -1, 0, 1, -1, -1, -1, -1, 1, 0, -1, 1, 1, 1};
+        char j[14] = {1, (char)-1, 0, 1, (char)-1, (char)-1, (char)-1, (char)-1, 1, 0, (char)-1, 1, 1, 1};
         return j[((y - 3) >> 1) % 14];
     }
     if (x == 11)
     {
-        char j[22] = {-1, 1, 1, 1, 0, -1, -1, -1, 1, -1, -1, 1, -1, -1, -1, 0, 1, 1, 1, -1, 1, 1};
+        char j[22] = {(char)-1, 1,        1,        1, 0, (char)-1, (char)-1, (char)-1, 1, (char)-1, (char)-1, 1,
+                      (char)-1, (char)-1, (char)-1, 0, 1, 1,        1,        (char)-1, 1, 1};
         return j[((y - 3) >> 1) % 22];
     }
     if (x == 13)
     {
-        char j[13] = {1, -1, -1, 1, -1, 0, -1, 1, -1, -1, 1, 1, 1};
+        char j[13] = {1, (char)-1, (char)-1, 1, (char)-1, 0, (char)-1, 1, (char)-1, (char)-1, 1, 1, 1};
         return j[((y - 3) >> 1) % 13];
     }
     if (x == 17)
     {
-        char j[17] = {-1, -1, -1, 1, -1, 1, 1, 0, 1, 1, -1, 1, -1, -1, -1, 1, 1};
+        char j[17] = {(char)-1, (char)-1, (char)-1, 1,        (char)-1, 1,        1, 0, 1,
+                      1,        (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1, 1};
         return j[((y - 3) >> 1) % 17];
     }
     if (x == 19)
     {
-        char j[19] = {1, 1, -1, 1, -1, -1, 1, 1, 0, -1, -1, 1, 1, -1, 1, -1, -1, -1, -1};
+        char j[19] = {1,        1, (char)-1, 1,        (char)-1, (char)-1, 1,        1,        0,       (char)-1,
+                      (char)-1, 1, 1,        (char)-1, 1,        (char)-1, (char)-1, (char)-1, (char)-1};
         unsigned t = ((y - 3) >> 1) % 38;
         return t >= 19 ? -j[t - 19] : j[t];
     }
     if (x == 23)
     {
-        char j[23] = {-1, -1, 1, 1, 1, 1, 1, -1, 1, -1, 0, 1, -1, 1, -1, -1, -1, -1, -1, 1, 1, -1, -1};
+        char j[23] = {(char)-1, (char)-1, 1,        1, 1,        1,        1,        (char)-1,
+                      1,        (char)-1, 0,        1, (char)-1, 1,        (char)-1, (char)-1,
+                      (char)-1, (char)-1, (char)-1, 1, 1,        (char)-1, (char)-1};
         unsigned t = ((y - 3) >> 1) % 46;
         return t >= 23 ? -j[t - 23] : j[t];
     }
     if (x == 29)
     {
-        char j[29] = {-1, 1, 1,  1,  -1, 1,  -1, -1, -1, -1, 1, 1,  -1, 0, -1,
-                      1,  1, -1, -1, -1, -1, 1,  -1, 1,  1,  1, -1, 1,  1};
+        char j[29] = {(char)-1, 1, 1,        1, (char)-1, 1, (char)-1, (char)-1, (char)-1, (char)-1,
+                      1,        1, (char)-1, 0, (char)-1, 1, 1,        (char)-1, (char)-1, (char)-1,
+                      (char)-1, 1, (char)-1, 1, 1,        1, (char)-1, 1,        1};
         return j[((y - 3) >> 1) % 29];
     }
     if (x == 31)
     {
-        char j[31] = {1,  1,  -1, 1, 1, -1, 1,  -1, -1, -1, 1, 1,  1,  -1, 0, 1,
-                      -1, -1, -1, 1, 1, 1,  -1, 1,  -1, -1, 1, -1, -1, -1, -1};
+        char j[31] = {1,        1, (char)-1, 1,        1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,
+                      1,        1, (char)-1, 0,        1, (char)-1, (char)-1, (char)-1, 1,        1,        1,
+                      (char)-1, 1, (char)-1, (char)-1, 1, (char)-1, (char)-1, (char)-1, (char)-1};
         unsigned t = ((y - 3) >> 1) % 62;
         return t >= 31 ? -j[t - 31] : j[t];
     }
@@ -1076,12 +1074,12 @@ static void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p, con
             }
         }
 
-        mpz_mod_fast_reduce(s, p);
-        mpz_mod_fast_reduce(t, p);
+        mpz_mod_fast_reduce(s, tmp, p);
+        mpz_mod_fast_reduce(t, tmp, p);
     }
 
-    mpz_mod_from_montg(s, p);
-    mpz_mod_from_montg(t, p);
+    mpz_mod_from_montg(s, tmp, p);
+    mpz_mod_from_montg(t, tmp, p);
 
     mpz_mod_slow_reduce(s, p->m);
     mpz_mod_slow_reduce(t, p->m);
@@ -1319,7 +1317,7 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
 
 void quadratic_primality_self_test(void)
 {
-    uint64_t a, b, c, m;
+    uint64_t a, b, m;
     uint128_t aa;
 
     // ---------------------------------------------------------------------------------
@@ -1328,16 +1326,16 @@ void quadratic_primality_self_test(void)
     m = 0x8765432187654321ull;
     a = 0xffffffffffffffffull;
     b = longmod(0, a, m);
-    assert(b = 8690466094656961758ull);
+    assert(b == 8690466094656961758ull);
     aa = a;
     b = longlongmod(aa, m);
-    assert(b = 8690466094656961758ull);
+    assert(b == 8690466094656961758ull);
 
     b = longmod(1, a, m);
-    assert(b = 7624654210261333660ull);
+    assert(b == 7624654210261333660ull);
     aa = ((uint128_t)1 << 64) + a;
     b = longlongmod(aa, m);
-    assert(b = 7624654210261333660ull);
+    assert(b == 7624654210261333660ull);
 
     // ---------------------------------------------------------------------------------
     printf("Jacobi ...\n");
@@ -1420,15 +1418,16 @@ void quadratic_primality_self_test(void)
     mod_precompute_t *p = mpz_mod_precompute(ma);
     assert(p->special_case == false);
     mpz_set_ui(mb, 0x2000ull * 0x1cc);
-    mpz_mod_fast_reduce(mb, p);
+    mpz_mod_fast_reduce(mb, x, p);
     mpz_mod_slow_reduce(mb, ma);
     assert(mpz_get_ui(mb) == 0);
     // clears temp structure
     mpz_mod_uncompute(p);
 
     // verify proth modulus
-    mpz_t mx;
+    mpz_t mx, mtt;
     mpz_init(mx);
+    mpz_init(mtt);
     mpz_set_ui(ma, 0xcdefabcdcdefabcdull);
     mpz_mul_2exp(ma, ma, 64);
     mpz_add_ui(ma, ma, 1);
@@ -1447,8 +1446,8 @@ void quadratic_primality_self_test(void)
     mpz_mod_to_montg(ma, p);
     mpz_mod_to_montg(mb, p);
     mpz_mul(mx, ma, mb);
-    mpz_mod_fast_reduce(mx, p);
-    mpz_mod_from_montg(mx, p);
+    mpz_mod_fast_reduce(mx, mtt, p);
+    mpz_mod_from_montg(mx, mtt, p);
     assert(mpz_cmp(x, mx) == 0);
     // clears temp structure
     mpz_clear(mx);
@@ -1461,7 +1460,7 @@ void quadratic_primality_self_test(void)
     assert(p->special_case == false);
     mpz_add_ui(mb, ma, 17);
     mpz_mul(x, mb, mb);
-    mpz_mod_fast_reduce(x, p);
+    mpz_mod_fast_reduce(x, mtt, p);
     mpz_mod_slow_reduce(x, ma);
     assert(mpz_get_ui(x) == 17 * 17);
 
@@ -1469,7 +1468,7 @@ void quadratic_primality_self_test(void)
     mpz_add_ui(mb, ma, 19);
     mpz_mul(x, mb, mb);
     mpz_mul(x, x, x);
-    mpz_mod_fast_reduce(x, p);
+    mpz_mod_fast_reduce(x, mtt, p);
     mpz_mod_slow_reduce(x, ma);
     assert(mpz_get_ui(x) == 19 * 19 * 19 * 19);
 
