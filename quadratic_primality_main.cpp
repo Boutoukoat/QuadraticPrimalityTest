@@ -9,9 +9,9 @@
 #include <string.h>
 #include <time.h>
 
+#include "expression_parser.h"
 #include "quadratic_primality.h"
 #include "quadratic_primality_alloc.h"
-#include "expression_parser.h"
 
 static void quadratic_primality_file(char *name, bool verbose)
 {
@@ -85,7 +85,8 @@ int main(int argc, char **argv)
             printf(" --version ............ : print the software version\n");
             printf(" -v ................... : enable verbose mode (should be before expressions)\n");
             printf(" -st .................. : run self-test and exit\n");
-            printf(" -f filename .......... : test multiple expressions in a file, one per line, count primes and composites\n");
+            printf(" -f filename .......... : test multiple expressions in a file, one per line, count primes and "
+                   "composites\n");
             printf(" expressions .......... : space-separated numerical expressions to be tested like 2*3^12+1\n");
             printf("\n");
             exit(0);

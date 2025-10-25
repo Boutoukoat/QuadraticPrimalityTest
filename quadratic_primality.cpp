@@ -108,9 +108,9 @@ static struct mod_precompute_t *mpz_mod_precompute(mpz_t n, bool verbose = false
             printf("Modular reduction optimized for numbers e*2^s + 1\n");
         }
         if (!p->special_case)
-	{
+        {
             printf("Modular reduction not optimized\n");
-	}
+        }
     }
     return p;
 }
@@ -243,6 +243,22 @@ void mpz_mod_fast_reduce(mpz_t r, struct mod_precompute_t *p)
     }
 
     mpz_clears(tmp, x_lo, x_hi, 0);
+}
+
+void mpz_mod_positive_reduce(mpz_t r, mpz_t tmp, struct mod_precompute_t *p)
+{
+    // check r < 0
+    if (mpz_sgn(r) < 0)
+    {
+        // make number positive
+        mpz_set(tmp, p->m);
+        do
+        {
+            mpz_add(r, r, tmp);
+            mpz_add(tmp, tmp, tmp);
+        } while (mpz_sgn(r) < 0);
+        // now r >= 0 and r < 3*m
+    }
 }
 
 static void mpz_mod_to_montg(mpz_t v, struct mod_precompute_t *p)
@@ -809,10 +825,8 @@ static bool mpz_is_perfect_square(mpz_t n)
 {
     mpz_t ignore;
     mpz_init(ignore);
-    uint64_t a = mpz_mod_ui(ignore, n, 
-		    64ull * 63ull * 55ull * 61ull * 59ull * 53ull * 47ull * 43ull * 41ull * 37ull);
-    uint64_t b = mpz_mod_ui(ignore, n, 
-		    31ull * 29ull * 23ull * 19ull * 17ull * 13ull);
+    uint64_t a = mpz_mod_ui(ignore, n, 64ull * 63ull * 55ull * 61ull * 59ull * 53ull * 47ull * 43ull * 41ull * 37ull);
+    uint64_t b = mpz_mod_ui(ignore, n, 31ull * 29ull * 23ull * 19ull * 17ull * 13ull);
     mpz_clear(ignore);
 
     if (0xffedfdfefdecull & (1ull << (a % 48)))
@@ -1007,21 +1021,12 @@ static void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p, con
 {
     unsigned bit = mpz_sizeinbase(e, 2) - 1;
     unsigned new_size = (p->n + 256) * 2;
-    mpz_t s2, t2, t0, tmp, ta;
+    mpz_t s2, t2, t0, tmp;
     mpz_init2(s2, new_size);
     mpz_init2(t2, new_size);
     mpz_init2(t0, new_size);
-    mpz_init2(ta, new_size);
     mpz_init2(tmp, new_size);
     mpz_set(t0, t);
-    if (sgn < 0)
-    {
-	    mpz_sub_ui(ta, p->m, a);
-    }
-    else
-    {
-            mpz_set_ui(ta, a);
-    }
 
     mpz_mod_to_montg(s, p);
     mpz_mod_to_montg(t, p);
@@ -1031,23 +1036,44 @@ static void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p, con
     while (bit--)
     {
         // Double
-	// s, t = 2 * s*t, s^2 * a + t^2
+        // s, t = 2 * s*t, s^2 * a + t^2
         mpz_mul(t2, t, t);
-        mpz_mul(s2, s, s);
+        if (sgn < 0)
+        {
+            // s2 = s * ( m - s)
+            mpz_sub(tmp, p->m, s);
+            mpz_mod_positive_reduce(tmp, s2, p);
+            mpz_mul(s2, s, tmp);
+        }
+        else
+        {
+            // s2 = s * s
+            mpz_mul(s2, s, s);
+        }
         mpz_mul(s, s, t);
         mpz_add(s, s, s);
-        mpz_mul(t, s2, ta);
+        mpz_mul_ui(t, s2, a);
         mpz_add(t, t, t2);
 
         if (mpz_tstbit(e, bit))
         {
             // add
-	    // s, t = s*t0 + t , t*t0 + s*a
-            mpz_mul(tmp, s, ta);
+            // s, t = s*t0 + t , t*t0 + s*a
+            mpz_mul_ui(tmp, s, a);
             mpz_mul(s, s, t0);
             mpz_add(s, s, t);
             mpz_mul(t, t, t0);
-            mpz_add(t, t, tmp);
+            if (sgn < 0)
+            {
+                // t -= s * a
+                mpz_sub(t, t, tmp);
+                mpz_mod_positive_reduce(t, tmp, p);
+            }
+            else
+            {
+                // t += s * a
+                mpz_add(t, t, tmp);
+            }
         }
 
         mpz_mod_fast_reduce(s, p);
@@ -1060,7 +1086,7 @@ static void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p, con
     mpz_mod_slow_reduce(s, p->m);
     mpz_mod_slow_reduce(t, p->m);
 
-    mpz_clears(s2, t2, t0, tmp, ta, 0);
+    mpz_clears(s2, t2, t0, tmp, 0);
 }
 
 /*
@@ -1133,8 +1159,11 @@ static bool uint64_quadratic_primality(uint64_t n, bool verbose = false)
 
     // search minimal a where Kronecker(a, n) == -1
     uint64_t a, temp;
-    for (a = 3;; a++)
+    for (a = 3;; a += 2)
     {
+        if (verbose)
+            printf("try a = %lu\n", a);
+
         if (!uint64_quadratic_primality(a))
             continue;
 
@@ -1214,34 +1243,35 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
     mod_precompute_t *pcpt = mpz_mod_precompute(n, verbose);
     if (mod8 == 3 || mod8 == 7)
     {
-        // (x+2)^(n+1) mod (n, x^2+1) == 5
+        // Check (x+2)^(n+1) mod (n, x^2+1) == 5
         mpz_exponentiate(bs, bt, e, pcpt, -1, 1);
-        // printf("3 mod 4 : %lx %lx %lx\n", bs, bt, n);
         r = (mpz_cmp_ui(bs, 0) == 0 && mpz_cmp_ui(bt, 5) == 0); // ?? n prime ? n composite for sure ?
     }
     else if (mod8 == 5)
     {
-        // (x+2)^(n+1) mod (n, x^2+2) == 6
+        // Check (x+2)^(n+1) mod (n, x^2+2) == 6
         mpz_exponentiate(bs, bt, e, pcpt, -1, 2);
-        // printf("5 mod 8 : %lx %lx %lx\n", bs, bt, n);
         r = (mpz_cmp_ui(bs, 0) == 0 && mpz_cmp_ui(bt, 6) == 0); // ?? n prime ? n composite for sure ?
     }
     else
     {
-	// mod8 == 1
+        // mod8 == 1
         if (mpz_is_perfect_square(n))
         {
             if (verbose)
                 printf("Number is a perfect square\n");
-            return false; // n composite perfect square, for any x, kronecker(x, n)==1 always
+            return false; // n composite perfect square, and for any x, kronecker(x, n)==1
         }
 
         // search minimal a where Kronecker(a, n) == -1 (since n is odd, jacobi
         // symbol will do it)
-        // This code assume a will never overflow
+        // This code assumes a will never overflow
         uint64_t a;
         for (a = 3;; a += 2)
         {
+            if (verbose)
+                printf("try a = %lu\n", a);
+
             if (!uint64_quadratic_primality(a))
                 continue;
 
@@ -1255,13 +1285,13 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
             if (j == -1)
                 break;
         }
-        // (x+2)^(n+1) mod (n, x^2+a) == 4+a
+        // Check (x+2)^(n+1) mod (n, x^2+a) == 4+a
         mpz_exponentiate(bs, bt, e, pcpt, -1, a);
         r = (mpz_cmp_ui(bs, 0) == 0 && mpz_cmp_ui(bt, a + 4) == 0); // ?? n prime ? n composite for sure ?
 
         if (r)
         {
-            // (x+2)^(n+1) mod (n, x^2-a) == 4-a
+            // Check (x+2)^(n+1) mod (n, x^2-a) == 4-a
             mpz_set_ui(bs, 1);
             mpz_set_ui(bt, 2);
             mpz_exponentiate(bs, bt, e, pcpt, 1, a);
@@ -1277,6 +1307,9 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
 
     if (verbose && r == false)
         printf("Number is composite\n");
+    if (verbose && r == true)
+        printf("Number passed all test and is unlikely a composite one\n");
+
     return r;
 }
 
@@ -1306,23 +1339,22 @@ void quadratic_primality_self_test(void)
     b = longlongmod(aa, m);
     assert(b = 7624654210261333660ull);
 
-
     // ---------------------------------------------------------------------------------
     printf("Jacobi ...\n");
     mpz_t ma, mb;
     mpz_init_set_str(mb, "100000000000000021", 16);
     mpz_init_set_ui(ma, 1);
-    assert(uint64_jacobi(2, mpz_mod_ui(ma, mb, 4*2)) == 1);
-    assert(uint64_jacobi(3, mpz_mod_ui(ma, mb, 4*3)) == 1);
-    assert(uint64_jacobi(5, mpz_mod_ui(ma, mb, 4*5)) == 1);
-    assert(uint64_jacobi(7, mpz_mod_ui(ma, mb, 4*7)) == 1);
-    assert(uint64_jacobi(9, mpz_mod_ui(ma, mb, 4*9)) == 1);
-    assert(uint64_jacobi(11, mpz_mod_ui(ma, mb, 4*11)) == 1);
-    assert(uint64_jacobi(13, mpz_mod_ui(ma, mb, 4*13)) == 1);
-    assert(uint64_jacobi(17, mpz_mod_ui(ma, mb, 4*17)) == 1);
-    assert(uint64_jacobi(19, mpz_mod_ui(ma, mb, 4*19)) == 1);
-    assert(uint64_jacobi(21, mpz_mod_ui(ma, mb, 4*21)) == 1);
-    assert(uint64_jacobi(23, mpz_mod_ui(ma, mb, 4*23)) == -1);
+    assert(uint64_jacobi(2, mpz_mod_ui(ma, mb, 4 * 2)) == 1);
+    assert(uint64_jacobi(3, mpz_mod_ui(ma, mb, 4 * 3)) == 1);
+    assert(uint64_jacobi(5, mpz_mod_ui(ma, mb, 4 * 5)) == 1);
+    assert(uint64_jacobi(7, mpz_mod_ui(ma, mb, 4 * 7)) == 1);
+    assert(uint64_jacobi(9, mpz_mod_ui(ma, mb, 4 * 9)) == 1);
+    assert(uint64_jacobi(11, mpz_mod_ui(ma, mb, 4 * 11)) == 1);
+    assert(uint64_jacobi(13, mpz_mod_ui(ma, mb, 4 * 13)) == 1);
+    assert(uint64_jacobi(17, mpz_mod_ui(ma, mb, 4 * 17)) == 1);
+    assert(uint64_jacobi(19, mpz_mod_ui(ma, mb, 4 * 19)) == 1);
+    assert(uint64_jacobi(21, mpz_mod_ui(ma, mb, 4 * 21)) == 1);
+    assert(uint64_jacobi(23, mpz_mod_ui(ma, mb, 4 * 23)) == -1);
 
     // ---------------------------------------------------------------------------------
     printf("Perfect square ...\n");
@@ -1377,8 +1409,7 @@ void quadratic_primality_self_test(void)
     mpz_add_ui(ma, ma, 0x1d);
     // verify 2*(modulus +1) == 2
     mpz_add_ui(mb, ma, 0x1);
-    mpz_mod_add(x, mb, mb, ma);
-    assert(mpz_cmp_ui(x, 2) == 0);
+    mpz_add(x, mb, mb);
     mpz_mod_slow_reduce(x, ma);
     assert(mpz_cmp_ui(x, 2) == 0);
 
@@ -1493,27 +1524,27 @@ void quadratic_primality_self_test(void)
     mpz_set_ui(mt, 1);
     mpz_set_ui(me, 2);
     mpz_exponentiate(ms, mt, me, p, 1, 3);
-    assert(mpz_cmp_ui(ms, 4) == 0); 
-    assert(mpz_cmp_ui(mt, 13) == 0); 
+    assert(mpz_cmp_ui(ms, 4) == 0);
+    assert(mpz_cmp_ui(mt, 13) == 0);
     mpz_set_ui(ms, 2);
     mpz_set_ui(mt, 1);
     mpz_set_ui(me, 2);
     mpz_exponentiate(ms, mt, me, p, -1, 3);
-    assert(mpz_cmp_ui(ms, 4) == 0); 
-    assert(mpz_cmp_ui(mt, 20) == 0); 
+    assert(mpz_cmp_ui(ms, 4) == 0);
+    assert(mpz_cmp_ui(mt, 20) == 0);
 
     mpz_set_ui(ms, 1);
     mpz_set_ui(mt, 5);
     mpz_set_ui(me, 3);
     mpz_exponentiate(ms, mt, me, p, 1, 3);
-    assert(mpz_cmp_ui(ms, 16) == 0); 
-    assert(mpz_cmp_ui(mt, 15) == 0); 
+    assert(mpz_cmp_ui(ms, 16) == 0);
+    assert(mpz_cmp_ui(mt, 15) == 0);
     mpz_set_ui(ms, 1);
     mpz_set_ui(mt, 5);
     mpz_set_ui(me, 3);
     mpz_exponentiate(ms, mt, me, p, -1, 3);
-    assert(mpz_cmp_ui(ms, 10) == 0); 
-    assert(mpz_cmp_ui(mt, 18) == 0); 
+    assert(mpz_cmp_ui(ms, 10) == 0);
+    assert(mpz_cmp_ui(mt, 18) == 0);
 
     mpz_mod_uncompute(p);
     mpz_set_ui(ma, 1);
@@ -1524,16 +1555,16 @@ void quadratic_primality_self_test(void)
     mpz_set_ui(mt, 5);
     mpz_set_ui(me, 0xa);
     mpz_exponentiate(ms, mt, me, p, 1, 3);
-    assert(mpz_cmp_ui(ms, 55152800) == 0); 
-    assert(mpz_cmp_ui(mt, 95666368) == 0); 
+    assert(mpz_cmp_ui(ms, 55152800) == 0);
+    assert(mpz_cmp_ui(mt, 95666368) == 0);
     mpz_set_ui(ms, 1);
     mpz_set_ui(mt, 5);
     mpz_set_ui(me, 0xa);
     mpz_exponentiate(ms, mt, me, p, -1, 3);
     mpz_set_str(mtmp, "618970019642690137447654941", 10);
-    assert(mpz_cmp(ms, mtmp) == 0); 
+    assert(mpz_cmp(ms, mtmp) == 0);
     mpz_set_str(mtmp, "618970019642690137432671773", 10);
-    assert(mpz_cmp(mt, mtmp) == 0); 
+    assert(mpz_cmp(mt, mtmp) == 0);
 
     mpz_mod_uncompute(p);
     mpz_clears(ms, mt, me, mtmp, 0);
@@ -1564,7 +1595,7 @@ void quadratic_primality_self_test(void)
         if (!res)
         {
             gmp_printf("prime 0x%Zx\n", ma);
-	    printf("error at %d %d\n", (int)j, (int)smallq[j]);
+            printf("error at %d %d\n", (int)j, (int)smallq[j]);
             assert(res == true);
         }
     }
