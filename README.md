@@ -2,9 +2,13 @@
 
 WORK IN PROGRESS !!!
 
-Test code to verify a quadratic primality test, based on linear recurrences
-
 The official paper describing the test and its proofs is work-in-progress
+
+# Algorithm
+
+- If n==3 mod 4 test Mod(Mod(x+2,n),x^2+1)^(n+1)==5.
+- If n==5 mod 8 test Mod(Mod(x+2,n),x^2+2)^(n+1)==6.
+- If n==1 mod 8 test Mod(Mod(x+2,n),x^2-a)^(n+1)==4-a and Mod(Mod(x+2,n),x^2+a)^(n+1)==4+a for kronecker(a,n)==-1
 
 So far, no counterexample (pseudo prime) has been found. 
 
