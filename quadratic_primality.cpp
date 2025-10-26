@@ -383,34 +383,6 @@ static inline uint64_t squaremod(uint64_t a, uint64_t n)
 #endif
 }
 
-static inline uint64_t shiftmod(uint64_t a, uint64_t s, uint64_t n)
-{
-#ifdef __x86_64__
-    uint64_t r, q;
-    asm("shld %rcl, %2, %0\n" : "=d"(r) : "0"(0), "r"(a), "c"(s));
-    asm("shlx %rcl, %1, %0\n" : "=a"(q) : "r"(a), "c"(s));
-    asm("div %4" : "=d"(r), "=a"(q) : "0"(r), "1"(q), "r"(n));
-    return r;
-#else
-    uint128_t tmp = a;
-    a <<= s;
-    tmp %= n;
-    return tmp;
-#endif
-}
-
-// count trailing zeroed bits
-static inline uint64_t tzcnt(uint64_t a)
-{
-#ifdef __x86_64__
-    uint64_t r;
-    asm("tzcnt %1,%0" : "=r"(r) : "r"(a));
-    return r;
-#else
-    return __builtin_ctzll(a);
-#endif
-}
-
 // count leading zeroed bits
 static inline uint64_t lzcnt(uint64_t a)
 {
@@ -873,8 +845,7 @@ static bool mpz_is_perfect_square(mpz_t n)
 //  Mod(Mod(s*x+t,n),x^2-(sgn*a))^e
 //
 //  assume t,a,n,e are 61 bit numbers   (require 3 guard bits) and input s == 1
-static inline void uint64_exponentiate(uint64_t &s, uint64_t &t, const uint64_t e, const uint64_t n, const int sgn,
-                                       const uint64_t a)
+static inline void uint64_exponentiate(uint64_t &s, uint64_t &t, uint64_t e, uint64_t n, int sgn, uint64_t a)
 {
     uint64_t t0 = t;
     uint64_t t2, s2, ss, tt;
@@ -882,10 +853,18 @@ static inline void uint64_exponentiate(uint64_t &s, uint64_t &t, const uint64_t 
     unsigned bit = log_2(e);
     while (bit--)
     {
-        t2 = squaremod(t, n); // f bits
-        s2 = squaremod(s, n); // f bits
-        ss = mulmod(s, t, n); // f bits
-        ss += ss;             // f+1 bits
+        if (__builtin_constant_p(sgn) && sgn < 0 && __builtin_constant_p(a) && a == 1)
+            {
+                tt = mulmod(t + s, t + n - s, n); // f bits
+                ss = mulmod(s, t, n);          // f bits
+                ss += ss;                      // f+1 bits
+            }
+	else
+	{
+            t2 = squaremod(t, n); // f bits
+            s2 = squaremod(s, n); // f bits
+            ss = mulmod(s, t, n); // f bits
+            ss += ss;             // f+1 bits
         if (__builtin_constant_p(sgn) && sgn == 1)
         {
             if (__builtin_constant_p(a) && a == 1)
@@ -906,7 +885,7 @@ static inline void uint64_exponentiate(uint64_t &s, uint64_t &t, const uint64_t 
         {
             if (__builtin_constant_p(a) && a == 1)
             {
-                tt = n - s2 + t2; // f+1 bits
+                tt = n - s2 + t2;            // f+2 bits
             }
             else if (__builtin_constant_p(a) && a == 2)
             {
@@ -932,6 +911,7 @@ static inline void uint64_exponentiate(uint64_t &s, uint64_t &t, const uint64_t 
         {
             assert(0);
         }
+	}
 
         if (e & (1ull << bit))
         {
@@ -1015,7 +995,7 @@ static inline void uint64_exponentiate(uint64_t &s, uint64_t &t, const uint64_t 
 //
 // Require input s == 1
 // Make output s,t < n
-static void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p, const int sgn, const uint64_t a)
+static inline void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p, int sgn, uint64_t a)
 {
     unsigned bit = mpz_sizeinbase(e, 2) - 1;
     unsigned new_size = (p->n + 256) * 2;
@@ -1035,6 +1015,18 @@ static void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p, con
     {
         // Double
         // s, t = 2 * s*t, s^2 * a + t^2
+        if (__builtin_constant_p(sgn) && sgn < 0 && __builtin_constant_p(a) && a == 1)
+	{
+                // s, t = 2 * s*t, t^2 - s^2 = (t+s) * (t-s)
+		mpz_add(t2, t, p->m);
+		mpz_sub(t2, t2, s);
+		mpz_add(tmp, t, s);
+		mpz_mul(t, t2, tmp);
+                mpz_mul(s, s, t);
+                mpz_add(s, s, s);
+	}
+	else
+	{
         mpz_mul(t2, t, t);
         if (sgn < 0)
         {
@@ -1050,14 +1042,29 @@ static void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p, con
         }
         mpz_mul(s, s, t);
         mpz_add(s, s, s);
-        mpz_mul_ui(t, s2, a);
-        mpz_add(t, t, t2);
+        if (__builtin_constant_p(a) && a == 1)
+        {
+            mpz_add(t, s2, t2);
+        }
+        else
+        {
+            mpz_mul_ui(t, s2, a);
+            mpz_add(t, t, t2);
+        }
+	}
 
         if (mpz_tstbit(e, bit))
         {
             // add
             // s, t = s*t0 + t , t*t0 + s*a
-            mpz_mul_ui(tmp, s, a);
+            if (__builtin_constant_p(a) && a == 1)
+            {
+                mpz_set(tmp, s);
+            }
+            else
+            {
+                mpz_mul_ui(tmp, s, a);
+            }
             mpz_mul(s, s, t0);
             mpz_add(s, s, t);
             mpz_mul(t, t, t0);
