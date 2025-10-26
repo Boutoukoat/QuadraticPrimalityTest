@@ -39,6 +39,21 @@ template <class T, class TT> static T long_mod(const T &u, const T &v, const T &
     return (T)r;
 }
 
+template <class T, class TT> static T shift_mod(const T &u, const T &v, const T &q)
+{
+    TT r = u;
+    r <<= v;
+    r %= q;
+    return (T)r;
+}
+
+template <class T, class TT> static T longlong_mod(const TT &u, const T &q)
+{
+    TT r = u;
+    r %= q;
+    return (T)r;
+}
+
 // (u << 64 + v) mod n
 template <> uint64_t long_mod<uint64_t, uint128_t>(const uint64_t &u, const uint64_t &v, const uint64_t &n)
 {
@@ -52,6 +67,18 @@ template <> uint64_t long_mod<uint64_t, uint128_t>(const uint64_t &u, const uint
 #endif
 }
 
+// (u) mod n
+template <> uint64_t longlong_mod(const uint128_t &u, const uint64_t &n)
+{
+#ifdef __x86_64__
+    uint64_t r = (uint64_t)(u >> 64), a = (uint64_t)u;
+    asm("divq %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n));
+    return r;
+#else
+    return u % n;
+#endif
+}
+
 // (u * v) mod n
 template <> uint64_t mul_mod<uint64_t, uint128_t>(const uint64_t &u, const uint64_t &v, const uint64_t &n)
 {
@@ -62,6 +89,21 @@ template <> uint64_t mul_mod<uint64_t, uint128_t>(const uint64_t &u, const uint6
     return r;
 #else
     uint128_t t = (uint128_t)u * v;
+    return t % n;
+#endif
+}
+
+// (u << v) mod n
+template <> uint64_t shift_mod<uint64_t, uint128_t>(const uint64_t &u, const uint64_t &v, const uint64_t &n)
+{
+#ifdef __x86_64__
+    uint64_t r = 0, a = u;
+    asm("shldq %b3, %2, %0" : "=d"(r) : "0"(r), "a"(a), "c"(v));
+    asm("shlxq %2, %1, %0" : "=a"(a) : "0"(a), "c"(v));
+    asm("divq %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n));
+    return r;
+#else
+    uint128_t t = (uint128_t)u << v;
     return t % n;
 #endif
 }
@@ -653,41 +695,62 @@ template <class T, class TT> static bool is_perfect_sursolid(const T &a)
     return (c == a);
 }
 
+// 2^e mod m
+template <class T, class TT> static T pow2_mod(const T &d, const T &m)
+{
+    // 2^e mod m : hardcode 6 first iterations
+    T n = log_2(d);
+    n = (n > 5) ? n - 5 : 0;
+    T e = (d >> n) & 0x3f;
+    T result = shift_mod<T, TT>(1ull, e, m);
+
+    while (n >= 6)
+    {
+        n -= 6;
+        result = square_mod<T, TT>(result, m);
+        result = square_mod<T, TT>(result, m);
+        result = square_mod<T, TT>(result, m);
+        result = square_mod<T, TT>(result, m);
+        result = square_mod<T, TT>(result, m);
+        result = square_mod<T, TT>(result, m);
+        e = (d >> n) & 0x3f;
+        if (e)
+        {
+            result = shift_mod<T, TT>(result, e, m);
+        }
+    }
+    while (n--)
+    {
+        result = square_mod<T, TT>(result, m);
+        e = (d >> n) & 1;
+        if (e)
+        {
+            result <<= 1;
+            result -= result >= m ? m : 0;
+        }
+    }
+    return result;
+}
+
 // a^e mod m
 template <class T, class TT> static T pow_mod(const T &a, const T &d, const T &m)
 {
     if (a == 2)
     {
-        // 2^e mod m : hardcode 5 first iterations
-        T n = log_2(d);
-	T e = d >> (n = ((n > 5) ? n - 5 : 0));
-        T result = long_mod<T, TT>(0, 1ull << e, m);
+        return pow2_mod<T, TT>(d, m);
+    }
 
-        while (n--)
-        {
-            result = square_mod<T, TT>(result, m);
-            if ((d >> n) & 1)
-            {
-                result <<= 1;
-                result -= result >= m ? m : 0;
-            }
-        }
-        return result;
-    }
-    else
+    T n = d;
+    T s = a;
+    T result = 1;
+    while (n)
     {
-        T n = d;
-        T s = a;
-        T result = 1;
-        while (n)
-        {
-            if (n & 1)
-                result = mul_mod<T, TT>(result, s, m);
-            s = square_mod<T, TT>(s, m);
-            n >>= 1;
-        }
-        return result;
+        if (n & 1)
+            result = mul_mod<T, TT>(result, s, m);
+        s = square_mod<T, TT>(s, m);
+        n >>= 1;
     }
+    return result;
 }
 
 // MR strong test
@@ -857,7 +920,7 @@ template <class T, class TT> static bool isprime(const T &n)
 //  Mod(Mod(x+t,n),x^2-(sgn*a))^e
 //
 //  if T is uint64_t, assume t,a,n,e are 61 bit numbers   (require 3 guard bits)
-template <class T, class TT> void exponentiate2(T &s, T &t, const T e, const T n, const int sgn, const T a)
+template <class T, class TT> inline void exponentiate2(T &s, T &t, const T e, const T n, const int sgn, const T a)
 {
     T t0 = t;
     T t2, s2, ss, tt;
@@ -865,55 +928,65 @@ template <class T, class TT> void exponentiate2(T &s, T &t, const T e, const T n
     unsigned bit = log_2<T>(e);
     while (bit--)
     {
-        t2 = square_mod<T, TT>(t, n); // f bits
-        s2 = square_mod<T, TT>(s, n); // f bits
-        ss = mul_mod<T, TT>(s, t, n); // f bits
-        ss += ss;                     // f+1 bits
-        if (__builtin_constant_p(sgn) && sgn == 1)
+        if (__builtin_constant_p(sgn) && sgn < 0 && __builtin_constant_p(a) && a == 1)
         {
-            if (__builtin_constant_p(a) && a == 1)
+            tt = mul_mod<T, TT>(t + s, t + n - s, n); // f bits
+            ss = mul_mod<T, TT>(s, t, n);             // f bits
+            ss += ss;                                 // f+1 bits
+        }
+        else
+        {
+
+            t2 = square_mod<T, TT>(t, n); // f bits
+            s2 = square_mod<T, TT>(s, n); // f bits
+            ss = mul_mod<T, TT>(s, t, n); // f bits
+            ss += ss;                     // f+1 bits
+            if (__builtin_constant_p(sgn) && sgn == 1)
             {
-                tt = s2 + t2; // f+1 bits
+                if (__builtin_constant_p(a) && a == 1)
+                {
+                    tt = s2 + t2; // f+1 bits
+                }
+                else if (__builtin_constant_p(a) && a == 2)
+                {
+                    tt = s2 + s2 + t2; // f+2 bits
+                }
+                else
+                {
+                    tt = mul_mod<T, TT>(s2, a, n); // f bits
+                    tt += t2;                      // f+1 bits
+                }
             }
-            else if (__builtin_constant_p(a) && a == 2)
+            else if (__builtin_constant_p(sgn) && sgn == -1)
             {
-                tt = s2 + s2 + t2; // f+2 bits
+                if (__builtin_constant_p(a) && a == 1)
+                {
+                    tt = n - s2 + t2; // f+1 bits
+                }
+                else if (__builtin_constant_p(a) && a == 2)
+                {
+                    tt = n + n - (s2 + s2) + t2; // f+2 bits
+                }
+                else
+                {
+                    tt = mul_mod<T, TT>(s2, n - a, n); // f bits
+                    tt += t2;                          // f+1 bits
+                }
             }
-            else
+            else if (sgn == 1)
             {
                 tt = mul_mod<T, TT>(s2, a, n); // f bits
                 tt += t2;                      // f+1 bits
             }
-        }
-        else if (__builtin_constant_p(sgn) && sgn == -1)
-        {
-            if (__builtin_constant_p(a) && a == 1)
-            {
-                tt = n - s2 + t2; // f+1 bits
-            }
-            else if (__builtin_constant_p(a) && a == 2)
-            {
-                tt = n + n - (s2 + s2) + t2; // f+2 bits
-            }
-            else
+            else if (sgn == -1)
             {
                 tt = mul_mod<T, TT>(s2, n - a, n); // f bits
                 tt += t2;                          // f+1 bits
             }
-        }
-        else if (sgn == 1)
-        {
-            tt = mul_mod<T, TT>(s2, a, n); // f bits
-            tt += t2;                      // f+1 bits
-        }
-        else if (sgn == -1)
-        {
-            tt = mul_mod<T, TT>(s2, n - a, n); // f bits
-            tt += t2;                          // f+1 bits
-        }
-        else
-        {
-            assert(0);
+            else
+            {
+                assert(0);
+            }
         }
 
         if (e & ((T)1 << bit))
@@ -1159,6 +1232,34 @@ static int inner_self_test_64(void)
     bool b;
     int j;
 
+    printf("Modular operations ...\n");
+    s = 10103;
+    t = 10101;
+    r = square_mod<uint64_t, uint128_t>(s, t);
+    assert(r == 4);
+    s = 10103;
+    t = 10101;
+    r = mul_mod<uint64_t, uint128_t>(s, s, t);
+    assert(r == 4);
+
+    s = 1;
+    t = 65535;
+    r = shift_mod<uint64_t, uint128_t>(s, 16, t);
+    assert(r == 1);
+    r = shift_mod<uint64_t, uint128_t>(s, 32, t);
+    assert(r == 1);
+    r = shift_mod<uint64_t, uint128_t>(s, 48, t);
+    assert(r == 1);
+
+    s = 3ull << 47;
+    t = (1ull << 60) - 1;
+    r = shift_mod<uint64_t, uint128_t>(s, 13, t);
+    assert(r == 3);
+    r = shift_mod<uint64_t, uint128_t>(s, 23, t);
+    assert(r == 3072);
+    r = shift_mod<uint64_t, uint128_t>(s, 33, t);
+    assert(r == 3145728);
+
     printf("Perfect square ...\n");
     b = is_perfect_square<uint64_t, uint128_t>(6);
     if (b)
@@ -1388,22 +1489,26 @@ static int inner_self_test_64(void)
 
     printf("Power ...\n");
     r = pow_mod<uint64_t, uint128_t>(2, 0xfedc, 197);
-    if (r != 182)
+    s = pow2_mod<uint64_t, uint128_t>(0xfedc, 197);
+    if (r != 182 || r != s)
         return -1;
     r = pow_mod<uint64_t, uint128_t>(2, 0x8765, 197);
-    if (r != 103)
+    s = pow2_mod<uint64_t, uint128_t>(0x8765, 197);
+    if (r != 103 || r != s)
         return -1;
     r = pow_mod<uint64_t, uint128_t>(2, 0x81, 197);
     if (r != 153)
         return -1;
     r = pow_mod<uint64_t, uint128_t>(2, 0x80, 197);
-    if (r != 175)
+    s = pow2_mod<uint64_t, uint128_t>(0x80, 197);
+    if (r != 175 || r != s)
         return -1;
     r = pow_mod<uint64_t, uint128_t>(2, 0x41, 197);
     if (r != 122)
         return -1;
     r = pow_mod<uint64_t, uint128_t>(2, 0x40, 197);
-    if (r != 61)
+    s = pow2_mod<uint64_t, uint128_t>(0x40, 197);
+    if (r != 61 || r != s)
         return -1;
     r = pow_mod<uint64_t, uint128_t>(2, 0x22, 197);
     if (r != 155)
@@ -1412,7 +1517,8 @@ static int inner_self_test_64(void)
     if (r != 176)
         return -1;
     r = pow_mod<uint64_t, uint128_t>(2, 0x20, 197);
-    if (r != 88)
+    s = pow2_mod<uint64_t, uint128_t>(0x20, 197);
+    if (r != 88 || r != s)
         return -1;
     r = pow_mod<uint64_t, uint128_t>(2, 0x1f, 197);
     if (r != 44)
@@ -1421,10 +1527,12 @@ static int inner_self_test_64(void)
     if (r != 22)
         return -1;
     r = pow_mod<uint64_t, uint128_t>(2, 0x1d, 197);
-    if (r != 11)
+    s = pow2_mod<uint64_t, uint128_t>(0x1d, 197);
+    if (r != 11 || r != s)
         return -1;
     r = pow_mod<uint64_t, uint128_t>(2, 0x1c, 197);
-    if (r != 104)
+    s = pow2_mod<uint64_t, uint128_t>(0x1c, 197);
+    if (r != 104 || r != s)
         return -1;
 
     r = pow_mod<uint64_t, uint128_t>(3, 0xaa55, 197);
