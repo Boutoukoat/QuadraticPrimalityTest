@@ -853,65 +853,65 @@ static inline void uint64_exponentiate(uint64_t &s, uint64_t &t, uint64_t e, uin
     unsigned bit = log_2(e);
     while (bit--)
     {
-        if (__builtin_constant_p(sgn) && sgn < 0 && __builtin_constant_p(a) && a == 1)
-            {
-                tt = mulmod(t + s, t + n - s, n); // f bits
-                ss = mulmod(s, t, n);          // f bits
-                ss += ss;                      // f+1 bits
-            }
-	else
-	{
+        if (__builtin_constant_p(sgn) && sgn > 0 && __builtin_constant_p(a) && a == 1)
+        {
+            tt = mulmod(t + s, t + n - s, n); // f bits
+            ss = mulmod(s, t, n);             // f bits
+            ss += ss;                         // f+1 bits
+        }
+        else
+        {
             t2 = squaremod(t, n); // f bits
             s2 = squaremod(s, n); // f bits
             ss = mulmod(s, t, n); // f bits
             ss += ss;             // f+1 bits
-        if (__builtin_constant_p(sgn) && sgn == 1)
-        {
-            if (__builtin_constant_p(a) && a == 1)
+            if (__builtin_constant_p(sgn) && sgn == 1)
             {
-                tt = s2 + t2; // f+1 bits
+                if (__builtin_constant_p(a) && a == 1)
+                {
+                    tt = s2 + t2; // f+1 bits
+                }
+                else if (__builtin_constant_p(a) && a == 2)
+                {
+                    tt = s2 + s2 + t2; // f+2 bits
+                }
+                else
+                {
+                    tt = mulmod(s2, a, n); // f bits
+                    tt += t2;              // f+1 bits
+                }
             }
-            else if (__builtin_constant_p(a) && a == 2)
+            else if (__builtin_constant_p(sgn) && sgn == -1)
             {
-                tt = s2 + s2 + t2; // f+2 bits
+                if (__builtin_constant_p(a) && a == 1)
+                {
+                    tt = n - s2 + t2; // f+2 bits
+                }
+                else if (__builtin_constant_p(a) && a == 2)
+                {
+                    tt = n + n - (s2 + s2) + t2; // f+2 bits
+                }
+                else
+                {
+                    tt = mulmod(s2, n - a, n); // f bits
+                    tt += t2;                  // f+1 bits
+                }
             }
-            else
+            else if (sgn == 1)
             {
                 tt = mulmod(s2, a, n); // f bits
                 tt += t2;              // f+1 bits
             }
-        }
-        else if (__builtin_constant_p(sgn) && sgn == -1)
-        {
-            if (__builtin_constant_p(a) && a == 1)
-            {
-                tt = n - s2 + t2;            // f+2 bits
-            }
-            else if (__builtin_constant_p(a) && a == 2)
-            {
-                tt = n + n - (s2 + s2) + t2; // f+2 bits
-            }
-            else
+            else if (sgn == -1)
             {
                 tt = mulmod(s2, n - a, n); // f bits
                 tt += t2;                  // f+1 bits
             }
+            else
+            {
+                assert(0);
+            }
         }
-        else if (sgn == 1)
-        {
-            tt = mulmod(s2, a, n); // f bits
-            tt += t2;              // f+1 bits
-        }
-        else if (sgn == -1)
-        {
-            tt = mulmod(s2, n - a, n); // f bits
-            tt += t2;                  // f+1 bits
-        }
-        else
-        {
-            assert(0);
-        }
-	}
 
         if (e & (1ull << bit))
         {
@@ -1015,43 +1015,43 @@ static inline void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t 
     {
         // Double
         // s, t = 2 * s*t, s^2 * a + t^2
-        if (__builtin_constant_p(sgn) && sgn < 0 && __builtin_constant_p(a) && a == 1)
-	{
-                // s, t = 2 * s*t, t^2 - s^2 = (t+s) * (t-s)
-		mpz_add(t2, t, p->m);
-		mpz_sub(t2, t2, s);
-		mpz_add(tmp, t, s);
-		mpz_mul(t, t2, tmp);
-                mpz_mul(s, s, t);
-                mpz_add(s, s, s);
-	}
-	else
-	{
-        mpz_mul(t2, t, t);
-        if (sgn < 0)
+        if (__builtin_constant_p(sgn) && sgn > 0 && __builtin_constant_p(a) && a == 1)
         {
-            // s2 = s * ( m - s)
-            mpz_sub(tmp, p->m, s);
-            mpz_mod_positive_reduce(tmp, s2, p);
-            mpz_mul(s2, s, tmp);
+            // s, t = 2 * s*t, t^2 - s^2 = (t+s) * (t-s)
+            mpz_add(t2, t, p->m);
+            mpz_sub(t2, t2, s);
+            mpz_add(tmp, t, s);
+            mpz_mul(t, t2, tmp);
+            mpz_mul(s, s, t);
+            mpz_add(s, s, s);
         }
         else
         {
-            // s2 = s * s
-            mpz_mul(s2, s, s);
+            mpz_mul(t2, t, t);
+            if (sgn < 0)
+            {
+                // s2 = s * ( m - s)
+                mpz_sub(tmp, p->m, s);
+                mpz_mod_positive_reduce(tmp, s2, p);
+                mpz_mul(s2, s, tmp);
+            }
+            else
+            {
+                // s2 = s * s
+                mpz_mul(s2, s, s);
+            }
+            mpz_mul(s, s, t);
+            mpz_add(s, s, s);
+            if (__builtin_constant_p(a) && a == 1)
+            {
+                mpz_add(t, s2, t2);
+            }
+            else
+            {
+                mpz_mul_ui(t, s2, a);
+                mpz_add(t, t, t2);
+            }
         }
-        mpz_mul(s, s, t);
-        mpz_add(s, s, s);
-        if (__builtin_constant_p(a) && a == 1)
-        {
-            mpz_add(t, s2, t2);
-        }
-        else
-        {
-            mpz_mul_ui(t, s2, a);
-            mpz_add(t, t, t2);
-        }
-	}
 
         if (mpz_tstbit(e, bit))
         {
