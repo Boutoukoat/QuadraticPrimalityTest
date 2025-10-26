@@ -920,7 +920,7 @@ template <class T, class TT> static bool isprime(const T &n)
 //  Mod(Mod(x+t,n),x^2-(sgn*a))^e
 //
 //  if T is uint64_t, assume t,a,n,e are 61 bit numbers   (require 3 guard bits)
-template <class T, class TT> inline void exponentiate2(T &s, T &t, const T e, const T n, const int sgn, const T a)
+template <class T, class TT> static inline __attribute__((always_inline)) void exponentiate2(T &s, T &t, T e, T n, int sgn, T a)
 {
     T t0 = t;
     T t2, s2, ss, tt;
@@ -928,15 +928,23 @@ template <class T, class TT> inline void exponentiate2(T &s, T &t, const T e, co
     unsigned bit = log_2<T>(e);
     while (bit--)
     {
-        if (__builtin_constant_p(sgn) && sgn < 0 && __builtin_constant_p(a) && a == 1)
+		// (s*x + t)^2 == s^2*x^2 + 2*s*t*x + t^2   mod (polynomial degree 2)
+		// if sgn < 0 modulus is x^2+a
+		//    subtract a multiple of the modulus s^2*(x^2 + a) = s^2*x^2 + s^2*a
+	        //    == 2*s*t *x + t^2 - s^2*a	
+		// if sgn > 0 modulus is x^2-a
+		//    subtract a multiple of the modulus s^2*(x^2 - a) = s^2*x^2 - s^2*a
+	        //    == 2*s*t *x + t^2 + s^2*a	
+
+        if (__builtin_constant_p(sgn) && sgn == -1 && __builtin_constant_p(a) && a == 1)
         {
+		// shorter for t^2 - a * s^2 = t^2 - s^2 = (t+s) * (t+n-s)
             tt = mul_mod<T, TT>(t + s, t + n - s, n); // f bits
             ss = mul_mod<T, TT>(s, t, n);             // f bits
             ss += ss;                                 // f+1 bits
         }
         else
         {
-
             t2 = square_mod<T, TT>(t, n); // f bits
             s2 = square_mod<T, TT>(s, n); // f bits
             ss = mul_mod<T, TT>(s, t, n); // f bits
@@ -991,6 +999,12 @@ template <class T, class TT> inline void exponentiate2(T &s, T &t, const T e, co
 
         if (e & ((T)1 << bit))
         {
+		// (s*x + t)*(x+t0) == s*x^2 + (t0*s+t)*x + t*t0
+		// if sgn < 0 subtract a multiple of the modulus s*(x^2 + a) = s*x^2 + s*a
+	        //    == (t0*s+t)*x + t*t0-s*a
+		// if sgn > 0 subtract a multiple of the modulus s*(x^2 - a) = s*x^2 - s*a
+	        //    == (t0*s+t)*x + t*t0+s*a
+
             if (__builtin_constant_p(sgn) && sgn == 1)
             {
                 if (__builtin_constant_p(a) && a == 1)
@@ -1700,10 +1714,11 @@ static int inner_self_test_64(void)
         return -1;
     }
 
-#define COUNT 5000
+#define COUNT 12000
+#define A_60_BITS 0x43210fedcba9876ull
     volatile uint64_t t0, t1;
     t0 = __rdtsc();
-    inner_loop(0, 2222, 0x4000000000, COUNT);
+    inner_loop(0, 2222, A_60_BITS, COUNT);
     t1 = __rdtsc();
     double d = (double)(t1 - t0);
     d /= COUNT;

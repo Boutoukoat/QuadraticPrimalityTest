@@ -124,6 +124,12 @@ static void mpz_mod_uncompute(mod_precompute_t *p)
     }
 }
 
+// input 
+//     r   : a number to reduce, can be much larger than modulus^2 by magnitude orders
+//     tmp : scratch area
+//     p   : precomputed constants and flags where p->m is the modulus
+// output
+//     r   : a reduced number >= 0 and < 2*modulus
 void mpz_mod_fast_reduce(mpz_t r, mpz_t tmp, struct mod_precompute_t *p)
 {
     mpz_t x_lo, x_hi;
@@ -845,7 +851,7 @@ static bool mpz_is_perfect_square(mpz_t n)
 //  Mod(Mod(s*x+t,n),x^2-(sgn*a))^e
 //
 //  assume t,a,n,e are 61 bit numbers   (require 3 guard bits) and input s == 1
-static inline void uint64_exponentiate(uint64_t &s, uint64_t &t, uint64_t e, uint64_t n, int sgn, uint64_t a)
+static inline __attribute__((always_inline)) void uint64_exponentiate(uint64_t &s, uint64_t &t, uint64_t e, uint64_t n, int sgn, uint64_t a)
 {
     uint64_t t0 = t;
     uint64_t t2, s2, ss, tt;
@@ -853,7 +859,7 @@ static inline void uint64_exponentiate(uint64_t &s, uint64_t &t, uint64_t e, uin
     unsigned bit = log_2(e);
     while (bit--)
     {
-        if (__builtin_constant_p(sgn) && sgn > 0 && __builtin_constant_p(a) && a == 1)
+        if (__builtin_constant_p(sgn) && sgn == -1 && __builtin_constant_p(a) && a == 1)
         {
             tt = mulmod(t + s, t + n - s, n); // f bits
             ss = mulmod(s, t, n);             // f bits
@@ -995,7 +1001,7 @@ static inline void uint64_exponentiate(uint64_t &s, uint64_t &t, uint64_t e, uin
 //
 // Require input s == 1
 // Make output s,t < n
-static inline void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p, int sgn, uint64_t a)
+static inline __attribute__((always_inline)) void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p, int sgn, uint64_t a)
 {
     unsigned bit = mpz_sizeinbase(e, 2) - 1;
     unsigned new_size = (p->n + 256) * 2;
@@ -1015,15 +1021,16 @@ static inline void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t 
     {
         // Double
         // s, t = 2 * s*t, s^2 * a + t^2
-        if (__builtin_constant_p(sgn) && sgn > 0 && __builtin_constant_p(a) && a == 1)
+        if (__builtin_constant_p(sgn) && sgn == -1 && __builtin_constant_p(a) && a == 1)
         {
-            // s, t = 2 * s*t, t^2 - s^2 = (t+s) * (t-s)
+            // s, t = 2 * s*t, t^2 - s^2 = (t+s) * (t+2*m-s)
             mpz_add(t2, t, p->m);
-            mpz_sub(t2, t2, s);
-            mpz_add(tmp, t, s);
-            mpz_mul(t, t2, tmp);
+            mpz_add(t2, t2, p->m);
+            mpz_sub(t2, t2, s);  // t2 = t+2*m - s
+            mpz_add(tmp, t, s);  // tmp = t + s;
             mpz_mul(s, s, t);
-            mpz_add(s, s, s);
+            mpz_mul(t, t2, tmp); // t^2 - s^2
+            mpz_add(s, s, s);    // 2*s*t
         }
         else
         {
