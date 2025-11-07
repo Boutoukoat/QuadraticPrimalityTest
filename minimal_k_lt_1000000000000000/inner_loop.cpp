@@ -499,7 +499,7 @@ template <class T> static int kronecker(const T &x, const T &y)
 template <class T, class TT> static T mod_inv(const T &x, const T &m)
 {
     if (m < 3)
-        return 0;
+        return m == 2 ? (x & 1) : 0;
     if (x < 2)
         return x;
     T a = x, b = m, u = 1, v = 0;
@@ -701,7 +701,7 @@ template <class T, class TT> static T pow2_mod(const T &d, const T &m)
     // 2^e mod m : hardcode 6 first iterations
     T n = log_2(d);
     n = (n > 5) ? n - 5 : 0;
-    T e = (d >> n) & 0x3f;
+    T e = d >> n;
     T result = shift_mod<T, TT>(1ull, e, m);
 
     while (n >= 6)
