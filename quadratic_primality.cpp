@@ -70,7 +70,7 @@ static struct mod_precompute_t *mpz_mod_precompute(mpz_t n, bool verbose = false
             // the least significant half of the number is 0x0001....1
             // precompute the most significant part of the number
             mpz_div_2exp(p->b, n, p->n2);
-            p->n32 = p->n + p->n2;
+            p->n32 = p->n + (p->n >> 1);
             mpz_set_ui(tmp, 1);
             mpz_mul_2exp(tmp, tmp, p->n32);
             mpz_mod(p->a, tmp, n);
@@ -120,6 +120,7 @@ static void mpz_mod_uncompute(mod_precompute_t *p)
     if (p)
     {
         mpz_clears(p->a, p->b, p->m, 0);
+	memset(p, 0, sizeof(struct mod_precompute_t));
         quadratic_free_function(p, sizeof(struct mod_precompute_t));
     }
 }
@@ -137,6 +138,7 @@ void mpz_mod_fast_reduce(mpz_t r, mpz_t tmp, struct mod_precompute_t *p)
 
     if (p->special_case)
     {
+        // special reduction for modulus = b * 2^n + 1
         if (p->proth)
         {
             if (mpz_sizeinbase(r, 2) > 2 * p->n + 2)
@@ -722,6 +724,18 @@ static sieve_t mpz_composite_sieve(mpz_t n)
             return COMPOSITE_FOR_SURE; // divisible by 23
         if ((uint64_t)(a * 0xf47e8fd1fa3f47e9ull) <= 0x02e05c0b81702e05ull)
             return COMPOSITE_FOR_SURE; // divisible by 89
+				       
+        // 2^23-1 is divisible by 47, .....
+        a = mpz_mod_mersenne(n, 23);
+        if ((uint64_t)(a * 0x51b3bea3677d46cfull) <= 0x0572620ae4c415c9ull)
+            return COMPOSITE_FOR_SURE; // divisible by 47
+				       
+        // 2^52-1 is divisible by 3, 5, 53, 157, .....
+        a = mpz_mod_mersenne(n, 52);
+        if ((uint64_t)(a * 0x21cfb2b78c13521dull) <= 0x04d4873ecade304dull)
+            return COMPOSITE_FOR_SURE; // divisible by 53
+	
+	// next small prime to test 59
     }
 
     // no trivial small factor detected
@@ -1015,8 +1029,6 @@ static inline __attribute__((always_inline)) void mpz_exponentiate(mpz_t s, mpz_
     mpz_mod_to_montg(s, p);
     mpz_mod_to_montg(t, p);
 
-    mpz_set(t0, t);
-
     while (bit--)
     {
         // Double
@@ -1047,10 +1059,17 @@ static inline __attribute__((always_inline)) void mpz_exponentiate(mpz_t s, mpz_
                 // s2 = s * s
                 mpz_mul(s2, s, s);
             }
+	    // 2 * s * t
             mpz_mul(s, s, t);
             mpz_add(s, s, s);
+	    // s2 * a
             if (__builtin_constant_p(a) && a == 1)
             {
+                mpz_add(t, s2, t2);
+            }
+	    else if (__builtin_constant_p(a) && a == 2)
+            {
+                mpz_add(s2, s2, s2);
                 mpz_add(t, s2, t2);
             }
             else
@@ -1068,12 +1087,19 @@ static inline __attribute__((always_inline)) void mpz_exponentiate(mpz_t s, mpz_
             {
                 mpz_set(tmp, s);
             }
+	    else if (__builtin_constant_p(a) && a == 2)
+            {
+                mpz_add(tmp, s, s);
+            }
             else
             {
                 mpz_mul_ui(tmp, s, a);
             }
+	    // s * t0 + t
             mpz_mul(s, s, t0);
             mpz_add(s, s, t);
+
+	    // t * t0 + (sgn)*a * s
             mpz_mul(t, t, t0);
             if (sgn < 0)
             {
@@ -1133,11 +1159,15 @@ static bool uint64_quadratic_primality(uint64_t n, bool verbose = false)
     {
     case COMPOSITE_FOR_SURE:
         if (verbose)
+	{
             printf("Number has a small factor\n");
+	}
         return false; // composite
     case PRIME_FOR_SURE:
         if (verbose)
+	{
             printf("Small number has no small factor\n");
+	}
         return true; // prime
     case UNDECIDED:
     default:
@@ -1165,7 +1195,9 @@ static bool uint64_quadratic_primality(uint64_t n, bool verbose = false)
     if (uint64_is_perfect_square(n))
     {
         if (verbose)
+	{
             printf("Number is a perfect square\n");
+	}
         return false; // n composite perfect square, for any x, kronecker(x, n)==1 always
     }
 
@@ -1174,7 +1206,9 @@ static bool uint64_quadratic_primality(uint64_t n, bool verbose = false)
     for (a = 3;; a += 2)
     {
         if (verbose)
+	{
             printf("try a = %lu\n", a);
+	}
 
         if (!uint64_quadratic_primality(a))
             continue;
@@ -1183,7 +1217,9 @@ static bool uint64_quadratic_primality(uint64_t n, bool verbose = false)
         if (j == 0)
         {
             if (verbose)
+	    {
                 printf("Number has a small factor\n");
+	    }
             return false; // composite for sure
         }
         if (j == -1)
@@ -1204,7 +1240,9 @@ static bool uint64_quadratic_primality(uint64_t n, bool verbose = false)
     if (!(bs == 0 && bt == temp))
     {
         if (verbose)
+	{
             printf("Number is composite\n");
+	}
         return false; // composite for sure
     }
     return true; // ?? n prime ?
@@ -1213,7 +1251,10 @@ static bool uint64_quadratic_primality(uint64_t n, bool verbose = false)
 bool mpz_quadratic_primality(mpz_t n, bool verbose)
 {
     if (verbose)
+    {
         gmp_printf("Testing a %lu digits number\n", mpz_sizeinbase(n, 10));
+    }
+
     if (mpz_cmp_ui(n, 1ull << 61) < 0)
     {
         // the quadratic test will run in 64 bits calculations
@@ -1223,7 +1264,9 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
     if (mpz_tstbit(n, 0) == 0)
     {
         if (verbose)
+	{
             printf("Number is even\n");
+	}
         return (mpz_cmp_ui(n, 2) == 0); // even
     }
 
@@ -1234,11 +1277,15 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
     {
     case COMPOSITE_FOR_SURE:
         if (verbose)
+	{
             printf("Number has a small factor\n");
+	}
         return false; // composite
     case PRIME_FOR_SURE:
         if (verbose)
+	{
             printf("Small number has no small factor\n");
+	}
         return true; // prime
     case UNDECIDED:
     default:
@@ -1271,7 +1318,9 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
         if (mpz_is_perfect_square(n))
         {
             if (verbose)
+	    {
                 printf("Number is a perfect square\n");
+	    }
             return false; // n composite perfect square, and for any x, kronecker(x, n)==1
         }
 
@@ -1282,7 +1331,9 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
         for (a = 3;; a += 2)
         {
             if (verbose)
+	    {
                 printf("try a = %lu\n", a);
+	    }
 
             if (!uint64_quadratic_primality(a))
                 continue;
@@ -1291,7 +1342,9 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
             if (j == 0)
             {
                 if (verbose)
+		{
                     printf("Number has a small factor\n");
+		}
                 return false; // composite for sure
             }
             if (j == -1)
@@ -1318,9 +1371,13 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
     mpz_mod_uncompute(pcpt);
 
     if (verbose && r == false)
+    {
         printf("Number is composite\n");
+    }
     if (verbose && r == true)
+    {
         printf("Number passed all tests and is unlikely a composite one\n");
+    }
 
     return r;
 }
@@ -1462,6 +1519,7 @@ void quadratic_primality_self_test(void)
     mpz_mul(mx, ma, mb);
     mpz_mod_fast_reduce(mx, mtt, p);
     mpz_mod_from_montg(mx, mtt, p);
+    mpz_mod_slow_reduce(mx, p->m);
     assert(mpz_cmp(x, mx) == 0);
     // clears temp structure
     mpz_clear(mx);
@@ -1530,6 +1588,8 @@ void quadratic_primality_self_test(void)
     printf("Small primes (mpz sanity check)\n");
     mpz_t ms, mt, me, mtmp;
     mpz_inits(ms, mt, me, mtmp, 0);
+
+    // quick tests mod 31
     mpz_set_ui(ma, 31);
     p = mpz_mod_precompute(ma);
 
@@ -1558,8 +1618,9 @@ void quadratic_primality_self_test(void)
     mpz_exponentiate(ms, mt, me, p, -1, 3);
     assert(mpz_cmp_ui(ms, 10) == 0);
     assert(mpz_cmp_ui(mt, 18) == 0);
-
     mpz_mod_uncompute(p);
+
+    // quick tests mod 2^89+29
     mpz_set_ui(ma, 1);
     mpz_mul_2exp(ma, ma, 89);
     mpz_add_ui(ma, ma, 29);
@@ -1578,8 +1639,30 @@ void quadratic_primality_self_test(void)
     assert(mpz_cmp(ms, mtmp) == 0);
     mpz_set_str(mtmp, "618970019642690137432671773", 10);
     assert(mpz_cmp(mt, mtmp) == 0);
-
     mpz_mod_uncompute(p);
+
+    // quick tests mod 21*2^128+1
+    mpz_set_ui(ma, 21);
+    mpz_mul_2exp(ma, ma, 128);
+    mpz_add_ui(ma, ma, 1);
+    p = mpz_mod_precompute(ma);
+    assert(p->proth == true);
+    mpz_set_ui(ms, 1);
+    mpz_set_ui(mt, 5);
+    mpz_set_ui(me, 0x8);   // exponent sequence is doubling-only
+    mpz_exponentiate(ms, mt, me, p, 1, 3);
+    assert(mpz_cmp_ui(ms, 1214080) == 0);
+    assert(mpz_cmp_ui(mt, 2115856) == 0);
+
+    mpz_set_ui(ms, 1);
+    mpz_set_ui(mt, 5);
+    mpz_set_ui(me, 0x9);   // exponent sequence is doubling-add
+    mpz_exponentiate(ms, mt, me, p, 1, 3);
+//    gmp_printf("%Zd %Zd\n", ms, mt);
+    assert(mpz_cmp_ui(ms, 8186256) == 0);
+    assert(mpz_cmp_ui(mt, 14221520) == 0);
+    mpz_mod_uncompute(p);
+
     mpz_clears(ms, mt, me, mtmp, 0);
 
     // ---------------------------------------------------------------------------------
