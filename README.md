@@ -12,6 +12,14 @@ The official paper describing the test and its proofs is work-in-progress
 
 So far, no counterexample (false positive, false negative) has been found. Exhaustive tests completed to 10^15
 
+# See also
+
+See the following self-similar primality tests
+
+- SimplePrimalityTest
+- QuadraticPrimalityTest
+- CubicPrimalityTest
+
 # Simple utility based of GMP library for large integers
 
 ```
