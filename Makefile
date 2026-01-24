@@ -1,6 +1,7 @@
 
 
 GGG = g++ -O3 -Wall -march=native -fomit-frame-pointer -fexpensive-optimizations
+# GGG = clang++ -O3 -Wall -march=native -fomit-frame-pointer
 
 OBJ = quadratic_primality_main.o \
       quadratic_primality.o \
@@ -8,7 +9,7 @@ OBJ = quadratic_primality_main.o \
       expression_parser.a
 
 quadratic: $(OBJ)
-	$(GGG) -static -o quadratic $(OBJ) -lgmp -lpthread
+	$(GGG) -static -o quadratic $(OBJ) -lgmp -lpthread -lm
 
 quadratic_primality_main.o: quadratic_primality_main.cpp quadratic_primality.h quadratic_primality_alloc.h expression_parser.h
 	$(GGG) -c -o quadratic_primality_main.o quadratic_primality_main.cpp

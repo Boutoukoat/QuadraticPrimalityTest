@@ -10,7 +10,7 @@ The official paper describing the test and its proofs is work-in-progress
 - If n==5 mod 8 test Mod(Mod(x+2,n),x^2+2)^(n+1)==6.
 - If n==1 mod 8 test Mod(Mod(x+2,n),x^2-a)^(n+1)==4-a and Mod(Mod(x+2,n),x^2+a)^(n+1)==4+a for kronecker(a,n)==-1
 
-So far, no counterexample (pseudo prime) has been found. 
+So far, no counterexample (false positive, false negative) has been found. Exhaustive tests completed to 10^15
 
 # Simple utility based of GMP library for large integers
 
@@ -32,11 +32,13 @@ $ ./quadratic 2^11213-1
 
 ```
 
-So far, no counterexample (false positive, false negative) has been found. Exhaustive tests completed to 10^15
-
 # Complete user's guide :
 
 Later.
+
+# Limits
+
+GMP and memory limits apply.
 
 
 
