@@ -6,12 +6,13 @@ GGG = g++ -O3 -Wall -march=native -fomit-frame-pointer -fexpensive-optimizations
 OBJ = quadratic_primality_main.o \
       quadratic_primality.o \
       quadratic_primality_alloc.o \
+      quadratic_primality_precompute.o \
       expression_parser.a
 
 quadratic: $(OBJ)
 	$(GGG) -static -o quadratic $(OBJ) -lgmp -lpthread -lm
 
-quadratic_primality_main.o: quadratic_primality_main.cpp quadratic_primality.h quadratic_primality_alloc.h expression_parser.h
+quadratic_primality_main.o: quadratic_primality_main.cpp quadratic_primality.h quadratic_primality_alloc.h bison.gmp_expr.tab.h
 	$(GGG) -c -o quadratic_primality_main.o quadratic_primality_main.cpp
 
 quadratic_primality_alloc.o: quadratic_primality_alloc.cpp quadratic_primality_alloc.h
@@ -20,7 +21,7 @@ quadratic_primality_alloc.o: quadratic_primality_alloc.cpp quadratic_primality_a
 quadratic_primality.o: quadratic_primality.cpp quadratic_primality.h
 	$(GGG) -c -o quadratic_primality.o quadratic_primality.cpp
 
-expression_parser.a : bison.gmp_expr.o lex.gmp_expr.o expression_parser.h
+expression_parser.a : bison.gmp_expr.o lex.gmp_expr.o bison.gmp_expr.tab.h
 	ar vr expression_parser.a bison.gmp_expr.o lex.gmp_expr.o
 
 bison.gmp_expr.o : bison.gmp_expr.tab.c bison.gmp_expr.h
@@ -39,6 +40,6 @@ check: quadratic
 	./quadratic -st
 
 clean:
-	rm -f ./quadratic $(OBJ)
+	rm -f ./quadratic $(OBJ) bison.gmp_expr.o bison.gmp_expr.tab.c bison.gmp_expr.tab.h lex.gmp_expr.o lex.gmp_expr.c
 
 
