@@ -2,6 +2,8 @@
 
 WORK IN PROGRESS !!!
 
+This is test code to verify a primality test, based on quadratic linear recurrences 
+
 The official paper describing the test and its proofs is work-in-progress
 
 # Algorithm
@@ -17,7 +19,7 @@ So far, no counterexample (false positive, false negative) has been found. Exhau
 See the following self-similar primality tests
 
 - SimplePrimalityTest
-- QuadraticPrimalityTest
+- CipollaPrimalityTest
 - CubicPrimalityTest
 
 # Simple utility based of GMP library for large integers
@@ -37,6 +39,14 @@ $ ./quadratic 0x988a04da39838a3757afef4ae6ed84b092aa0ee673067e52140862e5d27af3ad
 
 $ ./quadratic 2^11213-1
 2^11213-1 might be prime, time=    3147.283 msecs.
+
+$ cat test.txt
+3^2+1
+3^2+2
+$ ./quadratic -v -f test.txt
+3^2+1 ... composite for sure
+3^2+2 ... might be prime
+File test.txt done, 1 primes, 1 composites
 
 ```
 
