@@ -1230,12 +1230,43 @@ void quadratic_primality_self_test(void)
     assert(p->special_case == true);
     assert(p->montg == true);
     assert(p->proth == true);
+    assert(p->gmn == false);
     assert(p->n2 == 64);
     assert(p->n == 128);
     mpz_set_ui(ma, 0xabcdef01abcdef01ull);
     mpz_mul(ma, ma, ma);
     mpz_set_ui(mb, 0x1234567812345678ull);
     mpz_mul(mb, mb, mb);
+    mpz_mul(x, ma, mb);
+    mpz_mod(x, x, p->m);
+    mpz_mod_to_montg(ma, p);
+    mpz_mod_to_montg(mb, p);
+    mpz_mul(mx, ma, mb);
+    mpz_mod_fast_reduce(mx, mtt, p);
+    mpz_mod_from_montg(mx, mtt, p);
+    mpz_mod_slow_reduce(mx, p->m);
+    assert(mpz_cmp(x, mx) == 0);
+    // clears temp structure
+    mpz_clear(mx);
+    mpz_mod_uncompute(p);
+
+       // verify generalized mersenne modulus
+    mpz_init(mx);
+    mpz_set_ui(ma, 0xcdefabull);
+    mpz_mul_2exp(ma, ma, 128);
+    mpz_sub_ui(ma, ma, 89);
+    p = mpz_mod_precompute(ma);
+    assert(p->special_case == true);
+    assert(p->montg == true);
+    assert(p->gmn == true);
+    assert(p->proth == false);
+    assert(p->n2 == 128);
+    assert(p->n == 152);
+    mpz_set_ui(ma, 0xabcdef01abcdef01ull);
+    mpz_mul(ma, ma, ma);
+    mpz_set_ui(mb, 0x1234567812345678ull);
+    mpz_mul(mb, mb, mb);
+    mpz_mul_ui(mb, mb, 0xffff);
     mpz_mul(x, ma, mb);
     mpz_mod(x, x, p->m);
     mpz_mod_to_montg(ma, p);
@@ -1441,6 +1472,19 @@ void quadratic_primality_self_test(void)
 
     // ---------------------------------------------------------------------------------
     printf("Large primes (mpz)\n");
+
+   // large proth prime 333*2^448+1
+    mpz_set_ui(ma, 333);
+    mpz_mul_2exp(ma, ma, 448);
+    mpz_add_ui(ma, ma, 1);
+    assert(mpz_quadratic_primality(ma) == true);
+
+    // Large Riesel prime 100000000000037*2^5982-1
+    mpz_set_ui(ma, 1);
+    mpz_mul_2exp(ma, ma , 5982);
+    mpz_mul_ui(ma, ma , 100000000000037ul);
+    mpz_sub_ui(ma, ma, 1ul);
+    assert(mpz_quadratic_primality(ma) == true);
 
     // 11111...6442446...11111 (1001-digits) The smallest zeroless titanic palindromic prime
     // https://t5k.org/curios/page.php?number_id=3797

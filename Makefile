@@ -1,7 +1,8 @@
 
 
-GGG = g++ -O3 -Wall -march=native -fomit-frame-pointer -fexpensive-optimizations
+# GGG = g++ -O3 -Wall -march=native -fomit-frame-pointer -fexpensive-optimizations
 # GGG = clang++ -O3 -Wall -march=native -fomit-frame-pointer
+GGG = g++ -g -Wall -march=native -fomit-frame-pointer -fexpensive-optimizations
 
 OBJ = quadratic_primality_main.o \
       quadratic_primality.o \
@@ -18,7 +19,10 @@ quadratic_primality_main.o: quadratic_primality_main.cpp quadratic_primality.h q
 quadratic_primality_alloc.o: quadratic_primality_alloc.cpp quadratic_primality_alloc.h
 	$(GGG) -c -o quadratic_primality_alloc.o quadratic_primality_alloc.cpp
 
-quadratic_primality.o: quadratic_primality.cpp quadratic_primality.h
+quadratic_primality_precompute.o: quadratic_primality_precompute.cpp quadratic_primality_precompute.h
+	$(GGG) -c -o quadratic_primality_precompute.o quadratic_primality_precompute.cpp
+
+quadratic_primality.o: quadratic_primality.cpp quadratic_primality.h quadratic_primality_precompute.h
 	$(GGG) -c -o quadratic_primality.o quadratic_primality.cpp
 
 expression_parser.a : bison.gmp_expr.o lex.gmp_expr.o bison.gmp_expr.tab.h
@@ -31,7 +35,7 @@ bison.gmp_expr.tab.c bison.gmp_expr.tab.h : parser.y
 	bison -d parser.y
 
 lex.gmp_expr.o : lex.gmp_expr.c
-	$(GGG) -Wno-unused-function -c -o lex.gmp_expr.o lex.gmp_expr.c
+	$(GGG) -Wno-unused-function -DYY_BUF_SIZE=65540 -DYYLMAX=65540  -c -o lex.gmp_expr.o lex.gmp_expr.c
 
 lex.gmp_expr.c : parser.l bison.gmp_expr.tab.h
 	flex parser.l
