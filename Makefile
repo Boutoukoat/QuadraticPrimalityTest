@@ -1,8 +1,7 @@
 
 
-# GGG = g++ -O3 -Wall -march=native -fomit-frame-pointer -fexpensive-optimizations
+GGG = g++ -O3 -Wall -march=native -fomit-frame-pointer -fexpensive-optimizations
 # GGG = clang++ -O3 -Wall -march=native -fomit-frame-pointer
-GGG = g++ -g -Wall -march=native -fomit-frame-pointer -fexpensive-optimizations
 
 OBJ = quadratic_primality_main.o \
       quadratic_primality.o \
