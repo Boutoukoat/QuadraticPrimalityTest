@@ -845,8 +845,8 @@ static inline __attribute__((always_inline)) void mpz_exponentiate(mpz_t s, mpz_
     mpz_mod_from_montg(s, tmp, p);
     mpz_mod_from_montg(t, tmp, p);
 
-    mpz_mod_slow_reduce(s, p->m);
-    mpz_mod_slow_reduce(t, p->m);
+    mpz_mod_slow_reduce(s, p);
+    mpz_mod_slow_reduce(t, p);
 
     mpz_clears(s2, t2, t0, tmp, 0);
 }
@@ -1200,21 +1200,22 @@ void quadratic_primality_self_test(void)
     mpz_set_ui(ma, 0x1);
     mpz_mul_2exp(ma, ma, 127);
     mpz_add_ui(ma, ma, 0x1d);
+    mod_precompute_t *p = mpz_mod_precompute(ma);
     // verify 2*(modulus +1) == 2
     mpz_add_ui(mb, ma, 0x1);
     mpz_add(x, mb, mb);
-    mpz_mod_slow_reduce(x, ma);
+    mpz_mod_slow_reduce(x, p);
     assert(mpz_cmp_ui(x, 2) == 0);
 
     // ---------------------------------------------------------------------------------
     printf("Fast modular reduction\n");
     // verify generic modulus
     mpz_set_ui(ma, 0x1cc);
-    mod_precompute_t *p = mpz_mod_precompute(ma);
+    p = mpz_mod_precompute(ma);
     assert(p->special_case == false);
     mpz_set_ui(mb, 0x2000ull * 0x1cc);
     mpz_mod_fast_reduce(mb, x, p);
-    mpz_mod_slow_reduce(mb, ma);
+    mpz_mod_slow_reduce(mb, p);
     assert(mpz_get_ui(mb) == 0);
     // clears temp structure
     mpz_mod_uncompute(p);
@@ -1244,7 +1245,7 @@ void quadratic_primality_self_test(void)
     mpz_mul(mx, ma, mb);
     mpz_mod_fast_reduce(mx, mtt, p);
     mpz_mod_from_montg(mx, mtt, p);
-    mpz_mod_slow_reduce(mx, p->m);
+    mpz_mod_slow_reduce(mx, p);
     assert(mpz_cmp(x, mx) == 0);
     // clears temp structure
     mpz_clear(mx);
@@ -1274,7 +1275,7 @@ void quadratic_primality_self_test(void)
     mpz_mul(mx, ma, mb);
     mpz_mod_fast_reduce(mx, mtt, p);
     mpz_mod_from_montg(mx, mtt, p);
-    mpz_mod_slow_reduce(mx, p->m);
+    mpz_mod_slow_reduce(mx, p);
     assert(mpz_cmp(x, mx) == 0);
     // clears temp structure
     mpz_clear(mx);
@@ -1288,7 +1289,7 @@ void quadratic_primality_self_test(void)
     mpz_add_ui(mb, ma, 17);
     mpz_mul(x, mb, mb);
     mpz_mod_fast_reduce(x, mtt, p);
-    mpz_mod_slow_reduce(x, ma);
+    mpz_mod_slow_reduce(x, p);
     assert(mpz_get_ui(x) == 17 * 17);
 
     // verify (modulus + 0x19)^4 == 17*17*17*17
@@ -1296,7 +1297,7 @@ void quadratic_primality_self_test(void)
     mpz_mul(x, mb, mb);
     mpz_mul(x, x, x);
     mpz_mod_fast_reduce(x, mtt, p);
-    mpz_mod_slow_reduce(x, ma);
+    mpz_mod_slow_reduce(x, p);
     assert(mpz_get_ui(x) == 19 * 19 * 19 * 19);
 
     // clears temp structure

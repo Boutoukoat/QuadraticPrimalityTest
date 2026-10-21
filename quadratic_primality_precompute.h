@@ -1,9 +1,9 @@
 #pragma once
 
 // -----------------------------------------------------------------------
-// Cubic primality test
+// Quadratic primality test
 //
-// interface to a multithreaded version for heavy computations
+// Precomputations for faster modular reduction
 // -----------------------------------------------------------------------
 
 #include "gmp.h"
@@ -30,11 +30,11 @@ struct mod_precompute_t
     uint64_t e;        // small number part of the modulus
 };
 
-struct mod_precompute_t *mpz_mod_precompute(mpz_t n, bool verbose = false);
+struct mod_precompute_t *mpz_mod_precompute(mpz_t n, uint64_t log2a = 0, bool verbose = false);
 void mpz_mod_uncompute(mod_precompute_t *p);
 void mpz_mod_fast_reduce(mpz_t r, mpz_t tmp, struct mod_precompute_t *p);
 void mpz_mod_positive_reduce(mpz_t r, mpz_t tmp, struct mod_precompute_t *p);
 void mpz_mod_div2(mpz_t r, struct mod_precompute_t *p);
 void mpz_mod_to_montg(mpz_t v, struct mod_precompute_t *p);
 void mpz_mod_from_montg(mpz_t v, mpz_t tmp, struct mod_precompute_t *p);
-void mpz_mod_slow_reduce(mpz_t x, mpz_t m);
+void mpz_mod_slow_reduce(mpz_t x, struct mod_precompute_t *p);
