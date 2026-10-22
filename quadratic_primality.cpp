@@ -1023,7 +1023,7 @@ bool mpz_quadratic_primality(mpz_t n, bool verbose)
     mpz_set_ui(bs, 1);
     mpz_set_ui(bt, 2);
     mpz_add_ui(e, n, 1);
-    mod_precompute_t *pcpt = mpz_mod_precompute(n, verbose);
+    mod_precompute_t *pcpt = mpz_mod_precompute(n, 1, verbose);
     if (mod8 == 3 || mod8 == 7)
     {
         // Check (x+2)^(n+1) mod (n, x^2+1) == 5
