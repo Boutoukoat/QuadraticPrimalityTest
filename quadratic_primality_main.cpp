@@ -25,8 +25,8 @@ static void quadratic_primality_file(char *name, bool verbose)
         char *buff = (char *)malloc(buff_len);
         if (!buff)
         {
-                printf("Unable to allocate %d bytes\n", buff_len);
-                exit(1);
+            printf("Unable to allocate %d bytes\n", buff_len);
+            exit(1);
         }
         mpz_t v;
         mpz_init(v);
@@ -35,13 +35,13 @@ static void quadratic_primality_file(char *name, bool verbose)
         buff[buff_len - 2] = 0;
         while (fgets(buff, buff_len, f))
         {
-                // check overflow
-                line++;
-                if (buff[buff_len - 2] != 0)
-                {
-                        printf("Input line %ld too long\n", line);
-                        exit(1);
-                }
+            // check overflow
+            line++;
+            if (buff[buff_len - 2] != 0)
+            {
+                printf("Input line %ld too long\n", line);
+                exit(1);
+            }
             // trim trailing spaces
             int len = strlen(buff);
             while (len > 0 && isspace(buff[len - 1]))
@@ -63,11 +63,11 @@ static void quadratic_primality_file(char *name, bool verbose)
                     fflush(stdout);
                 }
                 bool valid = mpz_expression_parse(v, pt);
-               if (!valid)
-               {
-                       printf("Input line %ld unparsable\n", line);
-                       exit(1);
-               }
+                if (!valid)
+                {
+                    printf("Input line %ld unparsable\n", line);
+                    exit(1);
+                }
 
                 bool is_prime = mpz_quadratic_primality(v);
                 if (verbose)
@@ -79,8 +79,8 @@ static void quadratic_primality_file(char *name, bool verbose)
             }
         }
         mpz_clear(v);
-	free(buff);
-	fclose(f);
+        free(buff);
+        fclose(f);
     }
     printf("File %s done, %ld primes, %ld composites\n", name, prime_count, composite_count);
 }
@@ -139,10 +139,10 @@ int main(int argc, char **argv)
             // Supported operators are +/-*^() with usual precedence.
             bool valid = mpz_expression_parse(n, argv[i]);
             if (!valid)
-               {
-                       printf("Input unparsable\n");
-                       exit(1);
-               }
+            {
+                printf("Input unparsable\n");
+                exit(1);
+            }
 
             // gmp_printf("Test n=%Zd.\n",n);
 

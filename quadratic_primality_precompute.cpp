@@ -169,8 +169,8 @@ struct mod_precompute_t *mpz_mod_precompute(mpz_t n, uint64_t log2a, bool verbos
             s += 1;
         }
         // make sure reduction is worth it  (TODO)
-	if (3 * --s > p-> n)
-	{
+        if (3 * --s > p->n)
+        {
             mpz_set_ui(tmp, 1);
             mpz_mul_2exp(tmp, tmp, s);
             mpz_mod_2exp(p->b, n, s);
@@ -192,7 +192,7 @@ struct mod_precompute_t *mpz_mod_precompute(mpz_t n, uint64_t log2a, bool verbos
                 p->gmn = true;
                 p->special_case = true;
             }
-	}
+        }
     }
 
     if (!p->special_case)

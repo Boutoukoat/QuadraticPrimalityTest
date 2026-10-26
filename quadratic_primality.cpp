@@ -2,17 +2,724 @@
 // Quadratic primality check
 // -----------------------------------------------------------------------
 
+#include <algorithm>
 #include <assert.h>
+#include <ctype.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+
+#include <x86intrin.h>
+
+using namespace std;
+
+typedef unsigned __int128 uint128_t;
+typedef signed __int128 int128_t;
+
+static bool uint64_is_perfect_square(uint64_t a);
+
+// --------------------------------------------------------------------------------------
+//
+// C optimized implementations of simple utilities
+//
+// --------------------------------------------------------------------------------------
+
+// (u + v) mod n
+// Assume u+v < 2*n
+static inline uint64_t uint64_add_mod(uint64_t u, uint64_t v, uint64_t n)
+{
+#if 1
+    uint64_t t = u + v;
+    if (t < u)
+    {
+        return t - n;
+    }
+    return (t >= n) ? t - n : t;
+#else
+    uint128_t t = u + v;
+    return t < n ? t : t - n;
+#endif
+}
+
+static inline uint128_t uint128_add_mod(uint128_t u, uint128_t v, uint128_t n)
+{
+#if 1
+    uint128_t t = u + v;
+    if (t < u)
+    {
+        return t - n;
+    }
+    return (t >= n) ? t - n : t;
+#else
+    uint256_t t = u + v;
+    return t < n ? t : t - n;
+#endif
+}
+
+// (u) mod n
+// (u << 64 + v) mod n
+static inline uint64_t uint64_long_mod(uint64_t u, uint64_t v, uint64_t n)
+{
+#ifdef __x86_64__
+    uint64_t r, a;
+    asm("divq %4" : "=d"(r), "=a"(a) : "0"(u), "1"(v), "r"(n) : "flags");
+    return r;
+#else
+    uint128_t t = ((uint128_t)u << 64) + v;
+    return t % n;
+#endif
+}
+
+// (u) mod n
+static inline uint64_t uint128_long_mod(uint128_t u, uint64_t n)
+{
+#ifdef __x86_64__
+    uint64_t r = (uint64_t)(u >> 64), a = (uint64_t)u;
+    asm("divq %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n) : "flags");
+    return r;
+#else
+    return u % n;
+#endif
+}
+
+// u(hi, lo) mod n
+static inline void uint128_divrem(uint64_t *q, uint64_t *r, uint128_t u, uint64_t n)
+{
+#ifdef __x86_64__
+    uint64_t hi = (uint64_t)(u >> 64), lo = (uint64_t)u;
+    asm("divq %4" : "=d"(*r), "=a"(*q) : "0"(hi), "1"(lo), "r"(n) : "flags");
+#else
+    *q = u / n;
+    *r = u % n;
+#endif
+}
+
+static inline uint64_t mul_mod(uint64_t a, uint64_t b, uint64_t n)
+{
+#ifdef __x86_64__
+    uint64_t r;
+    asm("mulq %3" : "=d"(r), "=a"(a) : "1"(a), "r"(b));
+    asm("divq %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n) : "flags");
+    return r;
+#else
+    uint128_t tmp = (uint128_t)a * b;
+    tmp %= n;
+    return (uint64_t)tmp;
+#endif
+}
+
+// (a * b + c) % n
+static inline uint64_t mul_add_mod(uint64_t a, uint64_t b, uint64_t c, uint64_t n)
+{
+#ifdef __x86_64__
+    uint64_t r;
+    asm("mulq %3" : "=d"(r), "=a"(a) : "1"(a), "r"(b));
+    asm("addq %2, %1\n\tadcq $0, %0" : "+d"(r), "+a"(a) : "r"(c) : "flags");
+    asm("divq %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n) : "flags");
+    return r;
+#else
+    uint128_t tmp = (uint128_t)a * b;
+    tmp += c;
+    tmp %= n;
+    return (uint64_t)tmp;
+#endif
+}
+
+static inline uint64_t square_mod(uint64_t a, uint64_t n)
+{
+#ifdef __x86_64__
+    uint64_t r;
+    asm("mulq %2" : "=d"(r), "=a"(a) : "1"(a));
+    asm("divq %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n) : "flags");
+    return r;
+#else
+    uint128_t tmp = (uint128_t)a * a;
+    tmp %= n;
+    return tmp;
+#endif
+}
+
+// (u * u + s) mod n
+static inline uint64_t square_add_mod(uint64_t u, uint64_t s, uint64_t n)
+{
+#if 0
+   // need to consider this in pollard-brent algorithm 
+   // u = (u * u + s) / 2
+   uint128_t t = (uint128_t)u * u;
+    t += s;
+    t += (t & 1) ? n : 0;
+    t >>= 1;
+    t -= (t >= n) ? n : 0;
+    return t % n;
+#endif
+
+#ifdef __x86_64__
+    uint64_t r, a;
+    asm("mulq %2" : "=d"(r), "=a"(a) : "1"(u) : "flags");
+    asm("addq %2, %1\n\tadcq $0, %0" : "+d"(r), "+a"(a) : "r"(s) : "flags");
+    asm("divq %2" : "+d"(r), "+a"(a) : "r"(n) : "flags");
+    return r;
+#else
+    uint128_t t = (uint128_t)u * u;
+    t += s;
+    return t % n;
+#endif
+}
+
+// (u << s) mod n
+static inline uint64_t shift_mod(uint64_t u, uint64_t s, uint64_t n)
+{
+#ifdef __x86_164__
+    uint64_t r;
+    asm("xorq %0, %0\n shldq %b3, %1, %0\n shlxq %3, %1, %%rax\n divq %2"
+        : "=&d"(r)
+        : "r"(u), "r"(n), "c"(s)
+        : "flags", "%rax");
+    return r;
+#else
+    uint128_t t = (uint128_t)u;
+    t <<= s;
+    return (uint64_t)(t % n);
+#endif
+}
+
+// count leading zeroed bits
+static inline uint64_t uint64_lzcnt(uint64_t a)
+{
+#ifdef __x86_64__
+    uint64_t r;
+    asm("lzcntq %1,%0" : "=r"(r) : "r"(a));
+    return r;
+#else
+    return __builtin_clzll(a);
+#endif
+}
+
+// count trailing zeroed bits
+static inline uint64_t uint64_tzcnt(uint64_t a)
+{
+#ifdef __x86_64__
+    uint64_t r;
+    asm("tzcntq %1,%0" : "=r"(r) : "r"(a));
+    return r;
+#else
+    return __builtin_ctzll(a);
+#endif
+}
+
+// count trailing zeroed bits
+static inline uint64_t uint128_tzcnt(uint128_t a)
+{
+    uint64_t t = (uint64_t)a;
+    if (t)
+    {
+        return uint64_tzcnt(t);
+    }
+    t = (a >> 64);
+    return 64 + uint64_tzcnt(t);
+}
+
+// simple floor(log_2) function
+// log(1) = 0
+// log(2) = 1
+// log(3) = 1
+// log(4) = 2 ...
+static inline uint64_t uint64_log_2(uint64_t a)
+{
+    return 63 - uint64_lzcnt(a);
+}
+
+static inline uint64_t uint128_log_2(uint128_t a)
+{
+    uint64_t t = (uint64_t)(a >> 64);
+    if (t)
+    {
+        return 127 - uint64_lzcnt(t);
+    }
+    else
+    {
+        return 63 - uint64_lzcnt((uint64_t)a);
+    }
+}
+
+// --------------------------------------------------------------------------------------
+//
+// Math functions
+//
+// --------------------------------------------------------------------------------------
+
+// assume a >= 0
+// assume odd b > 0
+// assume a < 2^62 or b < 2^62
+static int uint64_jacobi(uint64_t a, uint64_t b)
+{
+    static char cols[]
+                    [64] = {
+                        {1},                                                                               // a=0
+                        {1, 1},                                                                            // a=1
+                        {(char)-1, (char)-1},                                                              // a=2
+                        {0, (char)-1, (char)-1},                                                           // a=3
+                        {1, 1, 1, 1},                                                                      // a=4
+                        {(char)-1, 0, (char)-1, 1, 1},                                                     // a=5
+                        {0, 1, (char)-1, 0, (char)-1, (char)-1},                                           // a=6
+                        {1, (char)-1, 0, 1, (char)-1, (char)-1, (char)-1},                                 // a=7
+                        {(char)-1, (char)-1, 1, 1, (char)-1, (char)-1, 1, 1},                              // a=8
+                        {0, 1, 1, 0, 1, 1, 0, 1, 1},                                                       // a=9
+                        {1, 0, (char)-1, 1, (char)-1, 1, 0, (char)-1, (char)-1, (char)-1},                 // a=10
+                        {(char)-1, 1, 1, 1, 0, (char)-1, (char)-1, (char)-1, 1, (char)-1, (char)-1},       // a=11
+                        {0, (char)-1, (char)-1, 0, 1, 1, 0, (char)-1, (char)-1, 0, 1, 1},                  // a=12
+                        {1, (char)-1, (char)-1, 1, (char)-1, 0, (char)-1, 1, (char)-1, (char)-1, 1, 1, 1}, // a=13
+                        {(char)-1, 1, 0, 1, 1, 1, (char)-1, (char)-1, (char)-1,
+                         0, (char)-1, 1, (char)-1, (char)-1},                                             // a=14
+                        {0, 0, 1, 0, 1, (char)-1, 0, 1, (char)-1, 0, (char)-1, 0, 0, (char)-1, (char)-1}, // a=15
+                        {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},                                 // a=16
+                        {(char)-1, (char)-1, (char)-1, 1, (char)-1, 1, 1, 0, 1, 1, (char)-1, 1, (char)-1, (char)-1,
+                         (char)-1, 1, 1}, // a=17
+                        {0, (char)-1, 1, 0, (char)-1, (char)-1,
+                         0, 1, (char)-1, 0, 1, 1, 0, (char)-1, 1, 0, (char)-1, (char)-1}, // a=18
+                        {1, 1, (char)-1, 1, (char)-1, (char)-1, 1, 1, 0, (char)-1, (char)-1,
+                         1, 1, (char)-1, 1, (char)-1, (char)-1, (char)-1, (char)-1}, // a=19
+                        {(char)-1, 0, (char)-1, 1, 1, (char)-1, 0, (char)-1, 1, 1,
+                         (char)-1, 0, (char)-1, 1, 1, (char)-1, 0, (char)-1, 1, 1}, // a=20
+                        {0, 1, 0,        0,        (char)-1, (char)-1, 0, 1, (char)-1, 0, (char)-1,
+                         1, 0, (char)-1, (char)-1, 0,        0,        1, 0, 1,        1}, // a=21
+                        {1, (char)-1, 1, 1,        0,        1, (char)-1, (char)-1, (char)-1, 1, (char)-1, 1, 1,
+                         1, (char)-1, 0, (char)-1, (char)-1, 1, (char)-1, (char)-1, (char)-1}, // a=22
+                        {(char)-1, (char)-1, 1,        1, 1,        1,        1,        (char)-1,
+                         1,        (char)-1, 0,        1, (char)-1, 1,        (char)-1, (char)-1,
+                         (char)-1, (char)-1, (char)-1, 1, 1,        (char)-1, (char)-1}, // a=23
+                        {0, 1, (char)-1, 0, (char)-1, (char)-1, 0, (char)-1, 1, 0, 1, 1,
+                         0, 1, (char)-1, 0, (char)-1, (char)-1, 0, (char)-1, 1, 0, 1, 1},            // a=24
+                        {1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1}, // a=25
+                        {(char)-1, 1,        (char)-1, 1,        1,        0,        (char)-1, 1,        1,
+                         1,        1,        1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1, 1,
+                         0,        (char)-1, (char)-1, 1,        (char)-1, 1,        (char)-1, (char)-1}, // a=26
+                        {0, (char)-1, (char)-1, 0, 1, 1, 0, (char)-1, (char)-1, 0, 1, 1, 0, (char)-1, (char)-1, 0, 1, 1,
+                         0, (char)-1, (char)-1, 0, 1, 1, 0, (char)-1, (char)-1}, // a=27
+                        {1, (char)-1, 0, 1, (char)-1, (char)-1, (char)-1, (char)-1, 1, 0, (char)-1, 1, 1, 1,
+                         1, (char)-1, 0, 1, (char)-1, (char)-1, (char)-1, (char)-1, 1, 0, (char)-1, 1, 1, 1}, // a=28
+                        {(char)-1, 1, 1,        1, (char)-1, 1, (char)-1, (char)-1, (char)-1, (char)-1,
+                         1,        1, (char)-1, 0, (char)-1, 1, 1,        (char)-1, (char)-1, (char)-1,
+                         (char)-1, 1, (char)-1, 1, 1,        1, (char)-1, 1,        1}, // a=29
+                        {0, 0, 1, 0, (char)-1, 1,        0, 1,        1, 0, (char)-1, 0, 0, 1,        (char)-1,
+                         0, 0, 1, 0, (char)-1, (char)-1, 0, (char)-1, 1, 0, (char)-1, 0, 0, (char)-1, (char)-1}, // a=30
+                        {1,        1, (char)-1, 1,        1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,
+                         1,        1, (char)-1, 0,        1, (char)-1, (char)-1, (char)-1, 1,        1,        1,
+                         (char)-1, 1, (char)-1, (char)-1, 1, (char)-1, (char)-1, (char)-1, (char)-1}, // a=31
+                        {(char)-1, (char)-1, 1, 1, (char)-1, (char)-1, 1, 1, (char)-1, (char)-1, 1, 1,
+                         (char)-1, (char)-1, 1, 1, (char)-1, (char)-1, 1, 1, (char)-1, (char)-1, 1, 1,
+                         (char)-1, (char)-1, 1, 1, (char)-1, (char)-1, 1, 1}, // a=32
+                        {0, (char)-1, (char)-1, 0, 0,        (char)-1, 0, 1, (char)-1, 0, (char)-1, 1,
+                         0, 1,        1,        0, 1,        1,        0, 1, (char)-1, 0, (char)-1, 1,
+                         0, (char)-1, 0,        0, (char)-1, (char)-1, 0, 1, 1}, // a=33
+                        {1,        1,        (char)-1, 1,        1,        (char)-1, 1,       0,        (char)-1,
+                         (char)-1, (char)-1, 1,        1,        1,        (char)-1, 1,       (char)-1, 1,
+                         (char)-1, (char)-1, (char)-1, 1,        1,        1,        0,       (char)-1, 1,
+                         (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, (char)-1}, // a=34
+                        {(char)-1, 0,        0,        1,        (char)-1, 1, 0,        1,        1,
+                         0,        1,        0,        (char)-1, 1,        1, 1,        0,        (char)-1,
+                         (char)-1, (char)-1, 1,        0,        (char)-1, 0, (char)-1, (char)-1, 0,
+                         (char)-1, 1,        (char)-1, 0,        0,        1, (char)-1, (char)-1}, // a=35
+                        {0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1,
+                         0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1}, // a=36
+                        {1,        (char)-1, 1, 1,        1,        (char)-1, (char)-1, (char)-1, (char)-1, 1,
+                         (char)-1, 1,        1, (char)-1, (char)-1, 1,        (char)-1, 0,        (char)-1, 1,
+                         (char)-1, (char)-1, 1, 1,        (char)-1, 1,        (char)-1, (char)-1, (char)-1, (char)-1,
+                         1,        1,        1, (char)-1, 1,        1,        1}, // a=37
+                        {(char)-1, (char)-1, (char)-1, 1, 1,        1,        1,        1,       0,        1,
+                         (char)-1, 1,        (char)-1, 1, 1,        (char)-1, 1,        1,       (char)-1, (char)-1,
+                         1,        (char)-1, (char)-1, 1, (char)-1, 1,        (char)-1, 0,       (char)-1, (char)-1,
+                         (char)-1, (char)-1, (char)-1, 1, 1,        1,        (char)-1, (char)-1}, // a=38
+                        {0,        1, 1,        0,        (char)-1, 0,        0,        (char)-1, 1,        0,
+                         1,        1, 0,        (char)-1, 1,        0,        1,        (char)-1, 0,        1,
+                         (char)-1, 0, (char)-1, 1,        0,        (char)-1, (char)-1, 0,        (char)-1, 1,
+                         0,        0, 1,        0,        (char)-1, (char)-1, 0,        (char)-1, (char)-1}, // a=39
+                        {1,        0, (char)-1, 1,        (char)-1, 1,        0, (char)-1, (char)-1, (char)-1,
+                         (char)-1, 0, 1,        (char)-1, 1,        (char)-1, 0, 1,        1,        1,
+                         1,        0, (char)-1, 1,        (char)-1, 1,        0, (char)-1, (char)-1, (char)-1,
+                         (char)-1, 0, 1,        (char)-1, 1,        (char)-1, 0, 1,        1,        1}, // a=40
+                        {(char)-1, 1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1,
+                         1,        1, 1,        (char)-1, (char)-1, 1,        1,        (char)-1, 1,
+                         1,        0, 1,        1,        (char)-1, 1,        1,        (char)-1, (char)-1,
+                         1,        1, 1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1, 1,
+                         (char)-1, 1, (char)-1, 1,        1}, // a=41
+                        {0, (char)-1, 0,        0,        1,        1, 0,        1,        1,       0,        (char)-1,
+                         1, 0,        1,        (char)-1, 0,        0, (char)-1, 0,        1,       (char)-1, 0,
+                         1, 0,        0,        1,        (char)-1, 0, (char)-1, 1,        0,       (char)-1, (char)-1,
+                         0, (char)-1, (char)-1, 0,        0,        1, 0,        (char)-1, (char)-1}, // a=42
+                        {1, (char)-1, 1,        1,        (char)-1, 1,        (char)-1, 1,        1,
+                         1, (char)-1, 1,        1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1,
+                         1, 1,        0,        (char)-1, (char)-1, 1,        1,        1,        1,
+                         1, (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,        (char)-1,
+                         1, (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1}, // a=43
+                        {(char)-1, 1,        1,        1,        0,        (char)-1, (char)-1, (char)-1, 1,
+                         (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, 0,        1,        1,
+                         1,        (char)-1, 1,        1,        (char)-1, 1,        1,        1,        0,
+                         (char)-1, (char)-1, (char)-1, 1,        (char)-1, (char)-1, 1,        (char)-1, (char)-1,
+                         (char)-1, 0,        1,        1,        1,        (char)-1, 1,        1}, // a=44
+                        {0, 0, (char)-1, 0, 1, (char)-1, 0, (char)-1, 1, 0, (char)-1, 0, 0, 1, 1,
+                         0, 0, (char)-1, 0, 1, (char)-1, 0, (char)-1, 1, 0, (char)-1, 0, 0, 1, 1,
+                         0, 0, (char)-1, 0, 1, (char)-1, 0, (char)-1, 1, 0, (char)-1, 0, 0, 1, 1}, // a=45
+                        {1,        1,        1,        1,        (char)-1, (char)-1, 1,        (char)-1, (char)-1, 1,
+                         0,        1,        1,        (char)-1, (char)-1, (char)-1, 1,        1,        (char)-1, 1,
+                         (char)-1, 1,        (char)-1, 1,        (char)-1, 1,        (char)-1, (char)-1, 1,        1,
+                         1,        (char)-1, (char)-1, 0,        (char)-1, 1,        1,        (char)-1, 1,        1,
+                         (char)-1, (char)-1, (char)-1, (char)-1, (char)-1, (char)-1}, // a=46
+                        {(char)-1, (char)-1, (char)-1, 1,        1,        (char)-1, 1,        1,
+                         1,        1,        1,        1,        (char)-1, (char)-1, 1,        (char)-1,
+                         1,        1,        1,        (char)-1, 1,        (char)-1, 0,        1,
+                         (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,        (char)-1, 1,
+                         1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1, (char)-1, 1,
+                         (char)-1, (char)-1, 1,        1,        1,        (char)-1, (char)-1}, // a=47
+                        {0, (char)-1, (char)-1, 0, 1, 1, 0, (char)-1, (char)-1, 0, 1, 1, 0, (char)-1, (char)-1, 0, 1, 1,
+                         0, (char)-1, (char)-1, 0, 1, 1, 0, (char)-1, (char)-1, 0, 1, 1, 0, (char)-1, (char)-1, 0, 1, 1,
+                         0, (char)-1, (char)-1, 0, 1, 1, 0, (char)-1, (char)-1, 0, 1, 1}, // a=48
+                        {1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1,
+                         1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1}, // a=49
+                        {(char)-1, 0, 1,        1,        (char)-1, (char)-1, 0, 1,        (char)-1, (char)-1,
+                         1,        0, (char)-1, (char)-1, 1,        1,        0, (char)-1, 1,        1,
+                         (char)-1, 0, 1,        1,        (char)-1, (char)-1, 0, 1,        (char)-1, (char)-1,
+                         1,        0, (char)-1, (char)-1, 1,        1,        0, (char)-1, 1,        1,
+                         (char)-1, 0, 1,        1,        (char)-1, (char)-1, 0, 1,        (char)-1, (char)-1}, // a=50
+                        {0, 1,        1,        0, (char)-1, 1,        0, 0,        (char)-1, 0, (char)-1, 1,
+                         0, 1,        1,        0, 1,        (char)-1, 0, 1,        (char)-1, 0, 1,        1,
+                         0, (char)-1, (char)-1, 0, 1,        (char)-1, 0, 1,        (char)-1, 0, (char)-1, (char)-1,
+                         0, (char)-1, 1,        0, 1,        0,        0, (char)-1, 1,        0, (char)-1, (char)-1,
+                         0, (char)-1, (char)-1}, // a=51
+                        {1, (char)-1, (char)-1, 1, (char)-1, 0, (char)-1, 1, (char)-1, (char)-1, 1, 1, 1,
+                         1, (char)-1, (char)-1, 1, (char)-1, 0, (char)-1, 1, (char)-1, (char)-1, 1, 1, 1,
+                         1, (char)-1, (char)-1, 1, (char)-1, 0, (char)-1, 1, (char)-1, (char)-1, 1, 1, 1,
+                         1, (char)-1, (char)-1, 1, (char)-1, 0, (char)-1, 1, (char)-1, (char)-1, 1, 1, 1}, // a=52
+                        {(char)-1, (char)-1, 1,        1,        1,        1,        1,        1,        (char)-1,
+                         (char)-1, (char)-1, 1,        (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,
+                         (char)-1, (char)-1, 1,        (char)-1, 1,        1,        (char)-1, 0,        (char)-1,
+                         1,        1,        (char)-1, 1,        (char)-1, (char)-1, 1,        (char)-1, (char)-1,
+                         (char)-1, 1,        (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,        1,
+                         1,        1,        1,        1,        (char)-1, (char)-1, 1,        1}, // a=53
+                        {0, 1, (char)-1, 0,        (char)-1, (char)-1, 0,        (char)-1, 1,        0,        1,
+                         1, 0, 1,        (char)-1, 0,        (char)-1, (char)-1, 0,        (char)-1, 1,        0,
+                         1, 1, 0,        1,        (char)-1, 0,        (char)-1, (char)-1, 0,        (char)-1, 1,
+                         0, 1, 1,        0,        1,        (char)-1, 0,        (char)-1, (char)-1, 0,        (char)-1,
+                         1, 0, 1,        1,        0,        1,        (char)-1, 0,        (char)-1, (char)-1}, // a=54
+                        {1,        0, (char)-1, 1,        0,        1,        0, 1,        1,        (char)-1,
+                         1,        0, 1,        (char)-1, (char)-1, 0,        0, (char)-1, 1,        (char)-1,
+                         (char)-1, 0, 1,        1,        1,        (char)-1, 0, 1,        (char)-1, (char)-1,
+                         (char)-1, 0, 1,        1,        (char)-1, 1,        0, 0,        1,        1,
+                         (char)-1, 0, (char)-1, 1,        (char)-1, (char)-1, 0, (char)-1, 0,        (char)-1,
+                         1,        0, (char)-1, (char)-1, (char)-1}, // a=55
+                        {(char)-1, 1,        0,        1,        1,        1,        (char)-1, (char)-1,
+                         (char)-1, 0,        (char)-1, 1,        (char)-1, (char)-1, 1,        (char)-1,
+                         0,        (char)-1, (char)-1, (char)-1, 1,        1,        1,        0,
+                         1,        (char)-1, 1,        1,        (char)-1, 1,        0,        1,
+                         1,        1,        (char)-1, (char)-1, (char)-1, 0,        (char)-1, 1,
+                         (char)-1, (char)-1, 1,        (char)-1, 0,        (char)-1, (char)-1, (char)-1,
+                         1,        1,        1,        0,        1,        (char)-1, 1,        1}, // a=56
+                        {0, (char)-1, 1,        0, (char)-1, (char)-1, 0, (char)-1, 0,        0, (char)-1, 1,
+                         0, 1,        (char)-1, 0, (char)-1, (char)-1, 0, 1,        1,        0, (char)-1, 1,
+                         0, 1,        1,        0, 1,        1,        0, 1,        (char)-1, 0, 1,        1,
+                         0, (char)-1, (char)-1, 0, (char)-1, 1,        0, 1,        (char)-1, 0, 0,        (char)-1,
+                         0, (char)-1, (char)-1, 0, 1,        (char)-1, 0, 1,        1}, // a=57
+                        {1,        (char)-1, 1,        1,        1,        (char)-1, (char)-1, (char)-1, 1,
+                         1,        1,        1,        1,        0,        (char)-1, 1,        (char)-1, 1,
+                         (char)-1, (char)-1, 1,        (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1,
+                         1,        (char)-1, 1,        1,        1,        (char)-1, 1,        1,        (char)-1,
+                         1,        1,        (char)-1, 1,        (char)-1, 1,        0,        (char)-1, (char)-1,
+                         (char)-1, (char)-1, (char)-1, 1,        1,        1,        (char)-1, (char)-1, (char)-1,
+                         1,        (char)-1, (char)-1, (char)-1}, // a=58
+                        {(char)-1, 1,        (char)-1, 1,        1,        (char)-1, (char)-1, 1,        (char)-1,
+                         1,        1,        1,        (char)-1, 1,        1,        (char)-1, (char)-1, (char)-1,
+                         1,        1,        1,        1,        1,        1,        (char)-1, 1,        1,
+                         1,        0,        (char)-1, (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1,
+                         (char)-1, (char)-1, (char)-1, 1,        1,        1,        (char)-1, (char)-1, 1,
+                         (char)-1, (char)-1, (char)-1, 1,        (char)-1, 1,        1,        (char)-1, (char)-1,
+                         1,        (char)-1, 1,        (char)-1, (char)-1}, // a=59
+                        {0, 0,        1,        0, 1,        (char)-1, 0, 1,        (char)-1, 0, (char)-1, 0,
+                         0, (char)-1, (char)-1, 0, 0,        (char)-1, 0, (char)-1, 1,        0, (char)-1, 1,
+                         0, 1,        0,        0, 1,        1,        0, 0,        1,        0, 1,        (char)-1,
+                         0, 1,        (char)-1, 0, (char)-1, 0,        0, (char)-1, (char)-1, 0, 0,        (char)-1,
+                         0, (char)-1, 1,        0, (char)-1, 1,        0, 1,        0,        0, 1,        1}, // a=60
+                        {1,        1,        (char)-1, 1,        (char)-1, 1,        1,        (char)-1, 1,
+                         (char)-1, (char)-1, 1,        1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1,
+                         1,        1,        (char)-1, 1,        1,        1,        (char)-1, (char)-1, (char)-1,
+                         1,        (char)-1, 0,        (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,
+                         1,        1,        (char)-1, 1,        1,        (char)-1, (char)-1, (char)-1, (char)-1,
+                         (char)-1, 1,        1,        (char)-1, (char)-1, 1,        (char)-1, 1,        1,
+                         (char)-1, 1,        (char)-1, 1,        1,        1,        1}, // a=61
+                        {(char)-1, (char)-1, (char)-1, 1,        (char)-1, 1,        1,        (char)-1, 1,
+                         1,        1,        1,        (char)-1, 1,        0,        1,        1,        1,
+                         (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,        1,        1,        1,
+                         (char)-1, 1,        1,        (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1,
+                         (char)-1, 1,        1,        1,        (char)-1, 1,        (char)-1, (char)-1, (char)-1,
+                         0,        (char)-1, 1,        (char)-1, (char)-1, (char)-1, (char)-1, 1,        (char)-1,
+                         (char)-1, 1,        (char)-1, 1,        1,        1,        (char)-1, (char)-1}, // a=62
+                        {0, (char)-1, 0, 0, (char)-1, (char)-1, 0,        (char)-1, 1, 0, (char)-1, 1, 0, 1,
+                         1, 0,        0, 1, 0,        (char)-1, (char)-1, 0,        1, 0, 0,        1, 1, 0,
+                         1, (char)-1, 0, 1, (char)-1, 0,        (char)-1, (char)-1, 0, 0, (char)-1, 0, 1, 1,
+                         0, (char)-1, 0, 0, (char)-1, (char)-1, 0,        (char)-1, 1, 0, (char)-1, 1, 0, 1,
+                         1, 0,        0, 1, 0,        (char)-1, (char)-1}, // a=63
+                    };
+    static char rows[][64] = {
+        {1, 1},                                                                            // b=1
+        {(char)-1, 0, 1},                                                                  // b=3
+        {(char)-1, (char)-1, 1, 0, 1},                                                     // b=5
+        {1, (char)-1, 1, (char)-1, (char)-1, 0, 1},                                        // b=7
+        {1, 0, 1, 1, 0, 1, 1, 0, 1},                                                       // b=9
+        {(char)-1, 1, 1, 1, (char)-1, (char)-1, (char)-1, 1, (char)-1, 0, 1},              // b=11
+        {(char)-1, 1, 1, (char)-1, (char)-1, (char)-1, (char)-1, 1, 1, (char)-1, 1, 0, 1}, // b=13
+        {1, 0, 1, 0, 0, (char)-1, 1, 0, 0, (char)-1, 0, (char)-1, (char)-1, 0, 1},         // b=15
+        {1, (char)-1, 1, (char)-1, (char)-1, (char)-1, 1, 1, (char)-1, (char)-1, (char)-1, 1, (char)-1, 1, 1, 0,
+         1}, // b=17
+        {(char)-1, (char)-1, 1, 1, 1, 1, (char)-1, 1, (char)-1, 1, (char)-1, (char)-1, (char)-1, (char)-1, 1, 1,
+         (char)-1, 0, 1}, // b=19
+        {(char)-1, 0, 1, 1, 0, 0, (char)-1, 0, (char)-1, (char)-1, 0,
+         (char)-1, 0, 0, 1, 1, 0, (char)-1, 1, 0,        1}, // b=21
+        {1,        1,        1, (char)-1, 1, (char)-1, 1,        1,        (char)-1, (char)-1, 1, 1,
+         (char)-1, (char)-1, 1, (char)-1, 1, (char)-1, (char)-1, (char)-1, (char)-1, 0,        1}, // b=23
+        {1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1},               // b=25
+        {(char)-1, 0,        1, (char)-1, 0,        1, (char)-1, 0,        1, (char)-1, 0,        1, (char)-1, 0,
+         1,        (char)-1, 0, 1,        (char)-1, 0, 1,        (char)-1, 0, 1,        (char)-1, 0, 1}, // b=27
+        {(char)-1, (char)-1, 1,        1,        1,        1,        (char)-1, 1,        (char)-1, (char)-1,
+         (char)-1, 1,        (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,        (char)-1,
+         1,        1,        1,        1,        (char)-1, (char)-1, 1,        0,        1}, // b=29
+        {1,        (char)-1, 1,        1,        (char)-1, 1,        1,        1, 1,        (char)-1, (char)-1,
+         (char)-1, 1,        (char)-1, 1,        (char)-1, 1,        1,        1, (char)-1, (char)-1, (char)-1,
+         (char)-1, 1,        (char)-1, (char)-1, 1,        (char)-1, (char)-1, 0, 1}, // b=31
+        {1,        0, 1, (char)-1, 0, (char)-1, 1,        0, (char)-1, 0, 0, (char)-1, (char)-1, 0, 1, 1, 0, (char)-1,
+         (char)-1, 0, 0, (char)-1, 0, 1,        (char)-1, 0, (char)-1, 1, 0, 1,        1,        0, 1}, // b=33
+        {(char)-1, 1, 1, 0, (char)-1, 0,        (char)-1, 1, 0,        1,        1,        1,
+         0,        0, 1, 1, (char)-1, (char)-1, 0,        0, (char)-1, (char)-1, (char)-1, 0,
+         (char)-1, 1, 0, 1, 0,        (char)-1, (char)-1, 1, (char)-1, 0,        1}, // b=35
+        {(char)-1, 1,        1,        (char)-1, (char)-1, 1,        (char)-1, 1,        1,        1,
+         1,        (char)-1, (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, (char)-1, 1,
+         (char)-1, (char)-1, (char)-1, 1,        1,        1,        1,        (char)-1, 1,        (char)-1,
+         (char)-1, 1,        1,        (char)-1, 1,        0,        1}, // b=37
+        {1, 0,        1, 1,        0,        (char)-1, 1, 0,        1,        1, 0, 0, (char)-1, 0,
+         1, (char)-1, 0, (char)-1, 1,        0,        1, (char)-1, 0,        1, 0, 0, (char)-1, (char)-1,
+         0, (char)-1, 1, 0,        (char)-1, (char)-1, 0, (char)-1, (char)-1, 0, 1}, // b=39
+        {1,        (char)-1, 1,        1,        (char)-1, (char)-1, 1,        1, 1, (char)-1, (char)-1,
+         (char)-1, (char)-1, (char)-1, 1,        (char)-1, 1,        (char)-1, 1, 1, (char)-1, 1,
+         (char)-1, 1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1, 1, 1, 1,        (char)-1,
+         (char)-1, 1,        1,        (char)-1, 1,        1,        0,        1}, // b=41
+        {(char)-1, (char)-1, 1,        (char)-1, 1,        (char)-1, (char)-1, 1,        1,        1,        (char)-1,
+         1,        1,        1,        1,        1,        (char)-1, (char)-1, (char)-1, 1,        (char)-1, 1,
+         1,        1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1,
+         1,        1,        (char)-1, 1,        (char)-1, 1,        1,        (char)-1, 0,        1}, // b=43
+        {(char)-1, 0, 1, 0, 0, (char)-1, (char)-1, 0, 0, 1, 0, (char)-1, 1, 0, 1,
+         (char)-1, 0, 1, 0, 0, (char)-1, (char)-1, 0, 0, 1, 0, (char)-1, 1, 0, 1,
+         (char)-1, 0, 1, 0, 0, (char)-1, (char)-1, 0, 0, 1, 0, (char)-1, 1, 0, 1}, // b=45
+        {1,        1,        1,        (char)-1, 1,        1, 1,        1,        (char)-1, (char)-1,
+         1,        (char)-1, 1,        (char)-1, 1,        1, 1,        (char)-1, (char)-1, 1,
+         (char)-1, (char)-1, 1,        1,        (char)-1, 1, 1,        (char)-1, (char)-1, (char)-1,
+         1,        (char)-1, 1,        (char)-1, 1,        1, (char)-1, (char)-1, (char)-1, (char)-1,
+         1,        (char)-1, (char)-1, (char)-1, (char)-1, 0, 1}, // b=47
+        {1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1,
+         1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1}, // b=49
+        {(char)-1, 0,        1,        1,        0, (char)-1, (char)-1, 0,        (char)-1, 1, 0,        1, 1,        0,
+         1,        0,        0,        1,        1, 0,        (char)-1, 1,        0,        1, (char)-1, 0, (char)-1, 1,
+         0,        (char)-1, (char)-1, 0,        0, (char)-1, 0,        (char)-1, (char)-1, 0, (char)-1, 1, 0,        1,
+         1,        0,        (char)-1, (char)-1, 0, 1,        (char)-1, 0,        1}, // b=51
+        {(char)-1, (char)-1, 1,        (char)-1, 1,        1,        (char)-1, 1,        1,        1,        (char)-1,
+         1,        (char)-1, 1,        1,        1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1, (char)-1,
+         1,        1,        (char)-1, (char)-1, 1,        1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1,
+         (char)-1, 1,        1,        1,        (char)-1, 1,        (char)-1, 1,        1,        1,        (char)-1,
+         1,        1,        (char)-1, 1,        (char)-1, (char)-1, 1,        0,        1}, // b=53
+        {1,        (char)-1, 1,        0,        (char)-1, 1,        1,        1,        0,        0, (char)-1,
+         1,        1,        0,        1,        1,        1,        (char)-1, 0,        (char)-1, 0, (char)-1,
+         (char)-1, 0,        1,        (char)-1, 1,        (char)-1, 0,        1,        1,        0, 1,
+         0,        1,        (char)-1, (char)-1, (char)-1, 0,        (char)-1, (char)-1, 1,        0, 0,
+         (char)-1, (char)-1, (char)-1, 1,        0,        (char)-1, 1,        (char)-1, (char)-1, 0, 1}, // b=55
+        {1,        0, 1,        (char)-1, 0, 1,        1,        0, (char)-1, (char)-1, 0, (char)-1,
+         1,        0, 1,        (char)-1, 0, 0,        (char)-1, 0, (char)-1, (char)-1, 0, 1,
+         (char)-1, 0, 1,        1,        0, (char)-1, 1,        0, (char)-1, (char)-1, 0, (char)-1,
+         0,        0, (char)-1, 1,        0, 1,        (char)-1, 0, (char)-1, (char)-1, 0, 1,
+         1,        0, (char)-1, 1,        0, 1,        1,        0, 1}, // b=57
+        {(char)-1, 1,        1,        1,        (char)-1, 1,        (char)-1, 1,        (char)-1, (char)-1,
+         1,        (char)-1, (char)-1, 1,        1,        1,        (char)-1, 1,        1,        1,
+         1,        (char)-1, (char)-1, 1,        1,        1,        1,        1,        (char)-1, (char)-1,
+         (char)-1, (char)-1, (char)-1, 1,        1,        (char)-1, (char)-1, (char)-1, (char)-1, 1,
+         (char)-1, (char)-1, (char)-1, 1,        1,        (char)-1, 1,        1,        (char)-1, 1,
+         (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,        (char)-1, 0,        1}, // b=59
+        {(char)-1, 1, 1,        1,        (char)-1, (char)-1, (char)-1, 1,        (char)-1, (char)-1, 1,
+         1,        1, 1,        1,        (char)-1, (char)-1, 1,        1,        (char)-1, 1,        (char)-1,
+         (char)-1, 1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, (char)-1, (char)-1, (char)-1, 1,
+         (char)-1, 1, (char)-1, (char)-1, 1,        (char)-1, 1,        1,        (char)-1, (char)-1, 1,
+         1,        1, 1,        1,        (char)-1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,
+         1,        1, (char)-1, 1,        0,        1}, // b=61
+        {1, 0,        1, (char)-1, 0,        0, 1, 0, (char)-1, 1, 0,        (char)-1, 0, 0,
+         1, (char)-1, 0, (char)-1, (char)-1, 0, 1, 1, 0,        1, (char)-1, 0,        0, 1,
+         0, (char)-1, 1, 0,        (char)-1, 0, 0, 1, (char)-1, 0, (char)-1, (char)-1, 0, 1,
+         1, 0,        1, (char)-1, 0,        0, 1, 0, (char)-1, 1, 0,        (char)-1, 0, 0,
+         1, (char)-1, 0, (char)-1, (char)-1, 0, 1}, // b=63
+    };
+
+    if (a >= b)
+    {
+        a %= b;
+    }
+
+    // 0 <= a < b with b odd
+    if (a < 3)
+    {
+        // (0/b) = (b == 1)
+        if (a == 0)
+        {
+            return (b == 1) ? 1 : 0;
+        }
+        // (1/b) = 1
+        if (a == 1)
+        {
+            return 1;
+        }
+        // (2/b) = (b % 8 == 3 || b % 8 == 5) ? -1 : 1;
+        return (((b >> 2) ^ (b >> 1)) & 1) ? -1 : 1;
+    }
+
+    // 3 <= a < b with b odd
+    if (a < 64)
+    {
+        if (a & 2)
+        {
+            uint64_t k = ((b - 3) >> 1) % (2 * a);
+            return k < a ? cols[a][k] : -cols[a][k - a];
+        }
+        else
+        {
+            uint64_t k = ((b - 3) >> 1) % a;
+            return cols[a][k];
+        }
+    }
+
+    // 64 <= a < b with b odd and a < 2^62
+    int t = 1;
+    if ((a & 3) == 0)
+    {
+        b = b % a;
+    }
+    else if ((a & 3) == 2 && b < 3 * a)
+    {
+        if (b < 2 * a)
+        {
+            t = (b & 2) ? -t : t;
+            b = b - a;
+        }
+        else
+        {
+            t = (b & 1) ? -t : t;
+            b = b - 2 * a;
+        }
+    }
+    else
+    {
+        b = b % (4 * a);
+        if (b >= 2 * a)
+        {
+            b -= 2 * a;
+            t = (a & 2) ? -t : t;
+        }
+    }
+
+    // 64 <= a, b odd
+    if (b < 64)
+    {
+        uint64_t k = (a - 2) % b;
+        return (t == -1) ? -rows[b >> 1][k] : rows[b >> 1][k];
+    }
+
+    unsigned c = (b >> 2) ^ (b >> 1);
+    while (a)
+    {
+        unsigned v = uint64_tzcnt(a);
+        a >>= v;
+        t = (c & v & 1) ? -t : t;
+
+        if (a < b)
+        {
+            uint64_t k = a;
+            a = b;
+            b = k;
+            t = ((a & b & 3) == 3) ? -t : t;
+            c = (b >> 2) ^ (b >> 1);
+        }
+
+        a -= b;
+    }
+    return (b == 1) ? t : 0;
+}
+
+static bool uint64_is_perfect_square(uint64_t a)
+{
+    if (0xffedfdfefdecull & (1ull << (a % 48)))
+        return false;
+    if (0xfdfdfdedfdfcfdecull & (1ull << (a % 64)))
+        return false;
+    if (0x7bfdb7cfedbafd6cull & (1ull << (a % 63)))
+        return false;
+    if (0x7dcfeb79ee35ccull & (1ull << (a % 55)))
+        return false;
+    if (0x8ec196bf5a60dc4ull & (1ull << (a % 61)))
+        return false;
+    if (0x5d49de7c1846d44ull & (1ull << (a % 59)))
+        return false;
+    if (0xd228fccfc512cull & (1ull << (a % 53)))
+        return false;
+    if (0x7bcae4d8ac20ull & (1ull << (a % 47)))
+        return false;
+    if (0x4a77c5c11acull & (1ull << (a % 43)))
+        return false;
+    if (0x4c7d4af8c8ull & (1ull << (a % 41)))
+        return false;
+    if (0x9a1dee164ull & (1ull << (a % 37)))
+        return false;
+    if (0x6de2b848ull & (1ull << (a % 31)))
+        return false;
+    if (0xc2edd0cull & (1ull << (a % 29)))
+        return false;
+    if (0x7acca0ull & (1ull << (a % 23)))
+        return false;
+    if (0x4f50cull & (1ull << (a % 19)))
+        return false;
+    if (0x5ce8ull & (1ull << (a % 17)))
+        return false;
+    if (0x9e4ull & (1ull << (a % 13)))
+        return false;
+
+    // approximation of square root with floating point accuracy
+    double d = (double)a;
+    d = exp(log(d) / 2.0); // square root
+    double dl = d * 0.999999;
+    double dh = d * 1.000001;
+    uint64_t c, m;
+    // binary search (1 more bit of square root per iteration)
+    uint64_t r = (uint64_t)d;
+    uint64_t l = (uint64_t)dl;
+    uint64_t h = (uint64_t)dh;
+    while (l <= h)
+    {
+        m = (l + h) >> 1;
+        c = m * m;
+        if (c == a)
+        {
+            return true; // perfect square
+        }
+        if (c < a)
+        {
+            l = m + 1;
+            r = m;
+        }
+        else
+        {
+            h = m - 1;
+        }
+    }
+    c = r * r; // check perfect square
+    return (c == a);
+}
 
 #include "quadratic_primality.h"
 #include "quadratic_primality_alloc.h"
 #include "quadratic_primality_precompute.h"
-
-typedef unsigned __int128 uint128_t;
 
 // x % (2^b -1)
 static uint64_t mpz_mod_mersenne(mpz_t x, uint64_t b)
@@ -58,181 +765,6 @@ static uint64_t mpz_mod_mersenne(mpz_t x, uint64_t b)
         r = (r & mask) + (r >> b);
     }
     return (uint64_t)r;
-}
-
-// (u << 64 + v) mod n
-static inline uint64_t longmod(uint64_t u, uint64_t v, uint64_t n)
-{
-#ifdef __x86_64__
-    uint64_t r, a;
-    asm("divq %4" : "=d"(r), "=a"(a) : "0"(u), "1"(v), "r"(n));
-    return r;
-#else
-    uint128_t t = ((uint128_t)u << 64) + v;
-    return t % n;
-#endif
-}
-
-// (u) mod n
-static inline uint64_t longlongmod(uint128_t u, uint64_t n)
-{
-#ifdef __x86_64__
-    uint64_t r = (uint64_t)(u >> 64), a = (uint64_t)u;
-    asm("divq %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n));
-    return r;
-#else
-    return u % n;
-#endif
-}
-
-static inline uint64_t mulmod(uint64_t a, uint64_t b, uint64_t n)
-{
-#ifdef __x86_64__
-    uint64_t r;
-    asm("mul %3" : "=d"(r), "=a"(a) : "1"(a), "r"(b));
-    asm("div %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n));
-    return r;
-#else
-    uint128_t tmp = (uint128_t)a * b;
-    tmp %= n;
-    return tmp;
-#endif
-}
-
-static inline uint64_t squaremod(uint64_t a, uint64_t n)
-{
-#ifdef __x86_64__
-    uint64_t r;
-    asm("mul %2" : "=d"(r), "=a"(a) : "1"(a));
-    asm("div %4" : "=d"(r), "=a"(a) : "0"(r), "1"(a), "r"(n));
-    return r;
-#else
-    uint128_t tmp = (uint128_t)a * a;
-    tmp %= n;
-    return tmp;
-#endif
-}
-
-// count leading zeroed bits
-static inline uint64_t lzcnt(uint64_t a)
-{
-#ifdef __x86_64__
-    uint64_t r;
-    asm("lzcnt %1,%0" : "=r"(r) : "r"(a));
-    return r;
-#else
-    return __builtin_clzll(a);
-#endif
-}
-
-// count leading zeroed bits
-static inline uint64_t log_2(uint64_t a)
-{
-    return 63 - lzcnt(a);
-}
-
-static int uint64_jacobi(uint64_t x, uint64_t y)
-{
-    // assert((y & 1) == 1);
-    if (y == 1 || x == 1)
-    {
-        return 1;
-    }
-
-    if (x == 2)
-    {
-        // char j[4] = { -1,-1,1,1};
-        // return j[((y - 3) >> 1) % 4];
-        return ((y + 2) & 4) ? -1 : 1;
-    }
-    if (x == 3)
-    {
-        char j[6] = {0, (char)-1, (char)-1, 0, 1, 1};
-        return j[((y - 3) >> 1) % 6];
-    }
-    if (x == 5)
-    {
-        char j[5] = {(char)-1, 0, (char)-1, 1, 1};
-        return j[((y - 3) >> 1) % 5];
-    }
-    if (x == 7)
-    {
-        char j[14] = {1, (char)-1, 0, 1, (char)-1, (char)-1, (char)-1, (char)-1, 1, 0, (char)-1, 1, 1, 1};
-        return j[((y - 3) >> 1) % 14];
-    }
-    if (x == 11)
-    {
-        char j[22] = {(char)-1, 1,        1,        1, 0, (char)-1, (char)-1, (char)-1, 1, (char)-1, (char)-1, 1,
-                      (char)-1, (char)-1, (char)-1, 0, 1, 1,        1,        (char)-1, 1, 1};
-        return j[((y - 3) >> 1) % 22];
-    }
-    if (x == 13)
-    {
-        char j[13] = {1, (char)-1, (char)-1, 1, (char)-1, 0, (char)-1, 1, (char)-1, (char)-1, 1, 1, 1};
-        return j[((y - 3) >> 1) % 13];
-    }
-    if (x == 17)
-    {
-        char j[17] = {(char)-1, (char)-1, (char)-1, 1,        (char)-1, 1,        1, 0, 1,
-                      1,        (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1, 1};
-        return j[((y - 3) >> 1) % 17];
-    }
-    if (x == 19)
-    {
-        char j[19] = {1,        1, (char)-1, 1,        (char)-1, (char)-1, 1,        1,        0,       (char)-1,
-                      (char)-1, 1, 1,        (char)-1, 1,        (char)-1, (char)-1, (char)-1, (char)-1};
-        unsigned t = ((y - 3) >> 1) % 38;
-        return t >= 19 ? -j[t - 19] : j[t];
-    }
-    if (x == 23)
-    {
-        char j[23] = {(char)-1, (char)-1, 1,        1, 1,        1,        1,        (char)-1,
-                      1,        (char)-1, 0,        1, (char)-1, 1,        (char)-1, (char)-1,
-                      (char)-1, (char)-1, (char)-1, 1, 1,        (char)-1, (char)-1};
-        unsigned t = ((y - 3) >> 1) % 46;
-        return t >= 23 ? -j[t - 23] : j[t];
-    }
-    if (x == 29)
-    {
-        char j[29] = {(char)-1, 1, 1,        1, (char)-1, 1, (char)-1, (char)-1, (char)-1, (char)-1,
-                      1,        1, (char)-1, 0, (char)-1, 1, 1,        (char)-1, (char)-1, (char)-1,
-                      (char)-1, 1, (char)-1, 1, 1,        1, (char)-1, 1,        1};
-        return j[((y - 3) >> 1) % 29];
-    }
-    if (x == 31)
-    {
-        char j[31] = {1,        1, (char)-1, 1,        1, (char)-1, 1,        (char)-1, (char)-1, (char)-1, 1,
-                      1,        1, (char)-1, 0,        1, (char)-1, (char)-1, (char)-1, 1,        1,        1,
-                      (char)-1, 1, (char)-1, (char)-1, 1, (char)-1, (char)-1, (char)-1, (char)-1};
-        unsigned t = ((y - 3) >> 1) % 62;
-        return t >= 31 ? -j[t - 31] : j[t];
-    }
-
-    int t = 1;
-    uint64_t a = x;
-    uint64_t n = y;
-    unsigned v = n & 7;
-    unsigned c = (v == 3) || (v == 5);
-    while (a)
-    {
-        v = __builtin_ctzll(a);
-        a >>= v;
-        t = (c & (v & 1)) ? -t : t;
-
-        if (a < n)
-        {
-            uint64_t tmp = a;
-            a = n;
-            n = tmp;
-            t = ((a & n & 3) == 3) ? -t : t;
-            v = n & 7;
-            c = (v == 3) || (v == 5);
-        }
-
-        a -= n;
-    }
-
-    return (n == 1) ? t : 0;
 }
 
 typedef enum sieve_e
@@ -464,75 +996,6 @@ static sieve_t mpz_composite_sieve(mpz_t n)
     return UNDECIDED; // might be prime
 }
 
-static bool uint64_is_perfect_square(uint64_t a)
-{
-    if (0xffedfdfefdecull & (1ull << (a % 48)))
-        return false;
-    if (0xfdfdfdedfdfcfdecull & (1ull << (a % 64)))
-        return false;
-    if (0x7bfdb7cfedbafd6cull & (1ull << (a % 63)))
-        return false;
-    if (0x7dcfeb79ee35ccull & (1ull << (a % 55)))
-        return false;
-    if (0x8ec196bf5a60dc4ull & (1ull << (a % 61)))
-        return false;
-    if (0x5d49de7c1846d44ull & (1ull << (a % 59)))
-        return false;
-    if (0xd228fccfc512cull & (1ull << (a % 53)))
-        return false;
-    if (0x7bcae4d8ac20ull & (1ull << (a % 47)))
-        return false;
-    if (0x4a77c5c11acull & (1ull << (a % 43)))
-        return false;
-    if (0x4c7d4af8c8ull & (1ull << (a % 41)))
-        return false;
-    if (0x9a1dee164ull & (1ull << (a % 37)))
-        return false;
-    if (0x6de2b848ull & (1ull << (a % 31)))
-        return false;
-    if (0xc2edd0cull & (1ull << (a % 29)))
-        return false;
-    if (0x7acca0ull & (1ull << (a % 23)))
-        return false;
-    if (0x4f50cull & (1ull << (a % 19)))
-        return false;
-    if (0x5ce8ull & (1ull << (a % 17)))
-        return false;
-    if (0x9e4ull & (1ull << (a % 13)))
-        return false;
-
-    // approximation of square root with floating point accuracy
-    double d = (double)a;
-    d = exp(log(d) / 2.0); // square root
-    double dl = d * 0.999999;
-    double dh = d * 1.000001;
-    uint64_t c, m;
-    // binary search (1 more bit of square root per iteration)
-    uint64_t r = (uint64_t)d;
-    uint64_t l = (uint64_t)dl;
-    uint64_t h = (uint64_t)dh;
-    while (l <= h)
-    {
-        m = (l + h) >> 1;
-        c = m * m;
-        if (c == a)
-        {
-            return true; // perfect square
-        }
-        if (c < a)
-        {
-            l = m + 1;
-            r = m;
-        }
-        else
-        {
-            h = m - 1;
-        }
-    }
-    c = r * r; // check perfect square
-    return (c == a);
-}
-
 static bool mpz_is_perfect_square(mpz_t n)
 {
     mpz_t ignore;
@@ -593,21 +1056,21 @@ static inline __attribute__((always_inline)) void uint64_exponentiate(uint64_t &
     uint64_t t0 = t;
     uint64_t t2, s2, ss, tt;
     uint128_t tmp, ss2, tt2;
-    unsigned bit = log_2(e);
+    unsigned bit = uint64_log_2(e);
     while (bit--)
     {
         if (__builtin_constant_p(sgn) && sgn == -1 && __builtin_constant_p(a) && a == 1)
         {
-            tt = mulmod(t + s, t + n - s, n); // f bits
-            ss = mulmod(s, t, n);             // f bits
-            ss += ss;                         // f+1 bits
+            tt = mul_mod(t + s, t + n - s, n); // f bits
+            ss = mul_mod(s, t, n);             // f bits
+            ss += ss;                          // f+1 bits
         }
         else
         {
-            t2 = squaremod(t, n); // f bits
-            s2 = squaremod(s, n); // f bits
-            ss = mulmod(s, t, n); // f bits
-            ss += ss;             // f+1 bits
+            t2 = square_mod(t, n); // f bits
+            s2 = square_mod(s, n); // f bits
+            ss = mul_mod(s, t, n); // f bits
+            ss += ss;              // f+1 bits
             if (__builtin_constant_p(sgn) && sgn == 1)
             {
                 if (__builtin_constant_p(a) && a == 1)
@@ -620,8 +1083,8 @@ static inline __attribute__((always_inline)) void uint64_exponentiate(uint64_t &
                 }
                 else
                 {
-                    tt = mulmod(s2, a, n); // f bits
-                    tt += t2;              // f+1 bits
+                    tt = mul_mod(s2, a, n); // f bits
+                    tt += t2;               // f+1 bits
                 }
             }
             else if (__builtin_constant_p(sgn) && sgn == -1)
@@ -636,19 +1099,19 @@ static inline __attribute__((always_inline)) void uint64_exponentiate(uint64_t &
                 }
                 else
                 {
-                    tt = mulmod(s2, n - a, n); // f bits
-                    tt += t2;                  // f+1 bits
+                    tt = mul_mod(s2, n - a, n); // f bits
+                    tt += t2;                   // f+1 bits
                 }
             }
             else if (sgn == 1)
             {
-                tt = mulmod(s2, a, n); // f bits
-                tt += t2;              // f+1 bits
+                tt = mul_mod(s2, a, n); // f bits
+                tt += t2;               // f+1 bits
             }
             else if (sgn == -1)
             {
-                tt = mulmod(s2, n - a, n); // f bits
-                tt += t2;                  // f+1 bits
+                tt = mul_mod(s2, n - a, n); // f bits
+                tt += t2;                   // f+1 bits
             }
             else
             {
@@ -722,13 +1185,13 @@ static inline __attribute__((always_inline)) void uint64_exponentiate(uint64_t &
                 ss2 = (uint128_t)ss * t0 + tt;  // 3f + 2 bits
                 tt2 = (uint128_t)tt * t0 + tmp; // 4f + 2 bits
             }
-            s = longlongmod(ss2, n);
-            t = longlongmod(tt2, n);
+            s = uint128_long_mod(ss2, n);
+            t = uint128_long_mod(tt2, n);
         }
         else
         {
-            s = longmod(0, ss, n);
-            t = longmod(0, tt, n);
+            s = uint64_long_mod(0, ss, n);
+            t = uint64_long_mod(0, tt, n);
         }
     }
 }
@@ -738,24 +1201,54 @@ static inline __attribute__((always_inline)) void uint64_exponentiate(uint64_t &
 //
 // Require input s == 1
 // Make output s,t < n
+//
+// V^2
+// 2*t*s*x + (a*sgn*s^2 + t^2)
+//
+// V*(x+t0)
+// (t0*s + t)*x + (a*sgn*s + t0*t)
+//
+// V/(x+t0)
+// d = 1/(-a*sgn + t0^2)
+// (t0*s - t)*d*x + (-a*sgn*s + t0*t)*d
+//
+// (t0/(-a*sgn + t0^2)*s - 1/(-a*sgn + t0^2)*t)*x + (-a*sgn/(-a*sgn + t0^2)*s + t0/(-a*sgn + t0^2)*t)
+
 static inline __attribute__((always_inline)) void mpz_exponentiate(mpz_t s, mpz_t t, mpz_t e, mod_precompute_t *p,
                                                                    int sgn, uint64_t a)
 {
-    unsigned bit = mpz_sizeinbase(e, 2) - 1;
     unsigned new_size = (p->n + 256) * 2;
-    mpz_t s2, t2, t0, tmp;
+    mpz_t d, e1, e3, s2, t2, t0, tmp;
     mpz_init2(s2, new_size);
     mpz_init2(t2, new_size);
     mpz_init2(t0, new_size);
     mpz_init2(tmp, new_size);
+    mpz_init2(d, new_size);
     mpz_set(t0, t);
-
+    mpz_init2(e1, new_size);
+    mpz_init2(e3, new_size);
+    mpz_mul_ui(e3, e, 3);
+    mpz_xor(e1, e3, e);
+    // d = 1/(t0^2 - sgn*a)
+    mpz_mul(d, t0, t0);
+    if (sgn < 0)
+    {
+        mpz_add_ui(d, d, a);
+    }
+    else
+    {
+        mpz_sub_ui(d, d, a);
+        mpz_mod_positive_reduce(d, tmp, p);
+    }
+    mpz_invert(d, d, p->m);
     mpz_mod_to_montg(s, p);
     mpz_mod_to_montg(t, p);
 
-    while (bit--)
+    unsigned bit = mpz_sizeinbase(e1, 2) - 1;
+
+    while (bit-- > 1)
     {
-        // Double
+        // Square
         // s, t = 2 * s*t, s^2 * a + t^2
         if (__builtin_constant_p(sgn) && sgn == -1 && __builtin_constant_p(a) && a == 1)
         {
@@ -803,38 +1296,83 @@ static inline __attribute__((always_inline)) void mpz_exponentiate(mpz_t s, mpz_
             }
         }
 
-        if (mpz_tstbit(e, bit))
+        if (mpz_tstbit(e1, bit))
         {
-            // add
-            // s, t = s*t0 + t , t*t0 + s*a
-            if (__builtin_constant_p(a) && a == 1)
+            if (mpz_tstbit(e3, bit))
             {
-                mpz_set(tmp, s);
-            }
-            else if (__builtin_constant_p(a) && a == 2)
-            {
-                mpz_add(tmp, s, s);
-            }
-            else
-            {
-                mpz_mul_ui(tmp, s, a);
-            }
-            // s * t0 + t
-            mpz_mul(s, s, t0);
-            mpz_add(s, s, t);
+                // Multiply
+                // s, t = s*t0 + t , t*t0 + s*a
+                if (__builtin_constant_p(a) && a == 1)
+                {
+                    mpz_set(tmp, s);
+                }
+                else if (__builtin_constant_p(a) && a == 2)
+                {
+                    mpz_add(tmp, s, s);
+                }
+                else
+                {
+                    mpz_mul_ui(tmp, s, a);
+                }
+                // s * t0 + t
+                mpz_mul(s, s, t0);
+                mpz_add(s, s, t);
 
-            // t * t0 + (sgn)*a * s
-            mpz_mul(t, t, t0);
-            if (sgn < 0)
-            {
-                // t -= s * a
-                mpz_sub(t, t, tmp);
-                mpz_mod_positive_reduce(t, tmp, p);
+                // t * t0 + (sgn)*a * s
+                mpz_mul(t, t, t0);
+                if (sgn < 0)
+                {
+                    // t -= s * a
+                    mpz_sub(t, t, tmp);
+                    mpz_mod_positive_reduce(t, tmp, p);
+                }
+                else
+                {
+                    // t += s * a
+                    mpz_add(t, t, tmp);
+                }
             }
             else
             {
-                // t += s * a
-                mpz_add(t, t, tmp);
+                // divides
+		// d = 1/(t0^2 - sgn*a) precomputed
+                // s, t = (t0*s - t)*d*x + (-a*sgn*s + t0*t)*d
+                if (__builtin_constant_p(a) && a == 1)
+                {
+                    mpz_set(tmp, s);
+                }
+                else if (__builtin_constant_p(a) && a == 2)
+                {
+                    mpz_add(tmp, s, s);
+                }
+                else
+                {
+                    mpz_mul_ui(tmp, s, a);
+                }
+
+                // s * t0 - t
+                mpz_mul(s, s, t0);
+                mpz_sub(s, s, t);
+
+                // t0*t - (sgn*a)*s
+                mpz_mul(t, t, t0);
+                if (sgn < 0)
+                {
+                    // t += s * a
+                    mpz_add(t, t, tmp);
+                    mpz_mod_positive_reduce(s, tmp, p);
+                }
+                else
+                {
+                    // t -= s * a
+                    mpz_sub(t, t, tmp);
+                    mpz_mod_positive_reduce(s, tmp, p);
+                    mpz_mod_positive_reduce(t, tmp, p);
+                }
+
+                // multiplication by d
+                mpz_mul(s, s, d);
+                mpz_mul(t, t, d);
             }
         }
 
@@ -848,7 +1386,7 @@ static inline __attribute__((always_inline)) void mpz_exponentiate(mpz_t s, mpz_
     mpz_mod_slow_reduce(s, p);
     mpz_mod_slow_reduce(t, p);
 
-    mpz_clears(s2, t2, t0, tmp, 0);
+    mpz_clears(d, e1, e3, s2, t2, t0, tmp, 0);
 }
 
 /*
@@ -1120,16 +1658,16 @@ void quadratic_primality_self_test(void)
 
     m = 0x8765432187654321ull;
     a = 0xffffffffffffffffull;
-    b = longmod(0, a, m);
+    b = uint64_long_mod(0, a, m);
     assert(b == 8690466094656961758ull);
     aa = a;
-    b = longlongmod(aa, m);
+    b = uint128_long_mod(aa, m);
     assert(b == 8690466094656961758ull);
 
-    b = longmod(1, a, m);
+    b = uint64_long_mod(1, a, m);
     assert(b == 7624654210261333660ull);
     aa = ((uint128_t)1 << 64) + a;
-    b = longlongmod(aa, m);
+    b = uint128_long_mod(aa, m);
     assert(b == 7624654210261333660ull);
 
     // ---------------------------------------------------------------------------------
@@ -1251,7 +1789,7 @@ void quadratic_primality_self_test(void)
     mpz_clear(mx);
     mpz_mod_uncompute(p);
 
-       // verify generalized mersenne modulus
+    // verify generalized mersenne modulus
     mpz_init(mx);
     mpz_set_ui(ma, 0xcdefabull);
     mpz_mul_2exp(ma, ma, 128);
@@ -1474,7 +2012,7 @@ void quadratic_primality_self_test(void)
     // ---------------------------------------------------------------------------------
     printf("Large primes (mpz)\n");
 
-   // large proth prime 333*2^448+1
+    // large proth prime 333*2^448+1
     mpz_set_ui(ma, 333);
     mpz_mul_2exp(ma, ma, 448);
     mpz_add_ui(ma, ma, 1);
@@ -1482,8 +2020,8 @@ void quadratic_primality_self_test(void)
 
     // Large Riesel prime 100000000000037*2^5982-1
     mpz_set_ui(ma, 1);
-    mpz_mul_2exp(ma, ma , 5982);
-    mpz_mul_ui(ma, ma , 100000000000037ul);
+    mpz_mul_2exp(ma, ma, 5982);
+    mpz_mul_ui(ma, ma, 100000000000037ul);
     mpz_sub_ui(ma, ma, 1ul);
     assert(mpz_quadratic_primality(ma) == true);
 
